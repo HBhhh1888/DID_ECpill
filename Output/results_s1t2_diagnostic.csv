@@ -1,0 +1,7 @@
+"age_group","model_spec","outcome","sum_plus","sum_minus","share_negative","min_sd_flip"
+"all_women","Birth Rate & All Age","birth_rate",0.999999999999995,0,0,3.18298163763865
+"all_women","Death Rate & All Age","death_rate",1.00000000000001,0,0,0.0645984366134216
+"teens","Birth Rate & Teens","birth_rate",1,0,0,5.13896313466666
+"teens","Death Rate & Teens","death_rate",1,0,0,4.62338926019295
+"young_adult","Birth Rate & Young Adult","birth_rate",0.999999999999995,0,0,5.62059693188668
+"young_adult","Death Rate & Young Adult","death_rate",1,0,0,1.84638580721052
