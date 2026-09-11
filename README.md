@@ -1,19 +1,22 @@
 # Reassessing the Effects of the Emergency Contraceptive Pill on Children and Women in Chile: Do Current DID Methods Change Results?
 
-This repository contains the analysis code for an honours thesis (Monash University, ETC4860/ETC5860) that reassesses Bentancor and Clarke (2017), *"Assessing Plan B: The Effect of the Morning After Pill on Children and Women,"* *The Economic Journal* 127(607):2525–2552.
+This repository contains the analysis code for my honours thesis at Monash University (ETC5860). In this project, I reassess the findings of Bentancor and Clarke (2017), who use a two-way fixed effects (TWFE) regression to estimate the effect of staggered municipal-level access to the emergency contraceptive (EC) pill in Chile on birth rates and early-gestation foetal deaths.
 
-The original paper uses a two-way fixed effects (TWFE) regression to estimate the effect of staggered municipal-level access to the emergency contraceptive (EC) pill in Chile (2008–2012) on birth rates and early-gestation foetal deaths. This project asks whether those TWFE conclusions are robust to modern staggered-adoption difference-in-differences (DID) methods:
+This project asks whether those TWFE conclusions are robust to modern staggered-adoption difference-in-differences (DID) methods:
 
 - **De Chaisemartin and D'Haultfoeuille (2020)** diagnostic tools, to assess whether the original TWFE estimates are vulnerable to the negative-weighting problem in staggered-adoption designs.
 - **Callaway and Sant'Anna (2021)**, a staggered-adoption-consistent estimator that allows for heterogeneous and dynamic treatment effects, used here as an alternative to TWFE.
 
 ## Repository Structure
 
+The repository is structured as follows:
+
 ```
 ├── DID_ECpill.qmd     # Main analysis file (Quarto, R)
 ├── Data/              # Input data (see Data Source below)
-├── Output/            # CSV results produced by the analysis, one file per analysis stage
-└── README.md
+├── Output/            # CSV results produced by rendering DID_ECpill.qmd
+├── .gitignore         # Git ignore file
+└── README.md          # This file
 ```
 
 ## Analysis Overview
@@ -29,33 +32,49 @@ Each stage writes its results to a corresponding CSV file in `Output/`.
 
 ## Data Source
 
-The data used in this project is the publicly available replication package for Bentancor and Clarke (2017), from <https://github.com/damiancclarke/morning-after-pill>. Two files are used:
+The data used in this project is the publicly available replication package for Bentancor and Clarke (2017), from <https://github.com/damiancclarke/morning-after-pill>. Two files are used and included in the `Data/` directory:
 
 - `S1Data_granular_covars.csv` — birth-level records
 - `S1Data_deaths_covars.csv` — foetal-death-level records
 
 Note that the public replication data covers 2006–2011, one year short of the original paper's 2006–2012 sample, so the baseline TWFE coefficients reported here do not reproduce the original paper's coefficients exactly.
 
-## Requirements
+## Pipeline
 
-This project uses R. The required packages are listed and installed at the top of `DID_ECpill.qmd`:
+All analysis code is contained in `DID_ECpill.qmd`, so the pipeline is straightforward:
+
+Step 1: Clone the repository:
+
+```bash
+git clone https://github.com/HBhhh1888/DID_ECpill.git
+cd DID_ECpill
+```
+
+Step 2: Uncomment and run the package installation code in `DID_ECpill.qmd` if you have not installed these packages:
 
 ```r
+# Install packages
+# 1. Regular CRAN packages
 install.packages(c("tidyverse", "purrr", "tibble", "fixest", "broom", "TwoWayFEWeights", "did", "remotes"))
+
+# 2. summclust (removed from CRAN, install via r-universe)
+install.packages("summclust", repos = "https://s3alfisc.r-universe.dev")
+
+# 3. If compilation fails (e.g. "emutls_w not found"), install gfortran toolchain first
+remotes::install_github("coatless-mac/macrtools")
+macrtools::macos_rtools_install()
+
+# 4. fwildclusterboot (from GitHub)
 remotes::install_github("s3alfisc/fwildclusterboot")
 ```
 
-## Running the Analysis
+Step 3: Run the analysis by rendering the Quarto document.
 
-Render `DID_ECpill.qmd` with [Quarto](https://quarto.org/):
+- Open `DID_ECpill.qmd` in RStudio and run all chunks, or
+- Render it from the command line using Quarto:
 
 ```bash
 quarto render DID_ECpill.qmd
 ```
 
-## References
-
-- Bentancor, A. and Clarke, D. (2017). Assessing Plan B: The Effect of the Morning After Pill on Children and Women. *The Economic Journal*, 127(607), 2525–2552.
-- Callaway, B. and Sant'Anna, P. H. (2021). Difference-in-differences with multiple time periods. *Journal of Econometrics*, 225(2), 200–230.
-- De Chaisemartin, C. and D'Haultfoeuille, X. (2020). Two-way fixed effects estimators with heterogeneous treatment effects. *American Economic Review*, 110(9), 2964–2996.
-- Goodman-Bacon, A. (2021). Difference-in-differences with variation in treatment timing. *Journal of Econometrics*, 225(2), 254–277.
+After these three steps, the rendered output of `DID_ECpill.qmd` will contain the full set of results, which are also saved as CSV files in the `Output/` directory.

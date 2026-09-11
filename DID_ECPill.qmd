@@ -72,39 +72,39 @@ Summary of raw data:
 
 ### (2) Data processing: Aggregate granular data into a municipality x year panel
 
-Data structure after aggregation:
-- Identifiers: dom_comuna, year
-- Key Variables:
+Data structure after aggregation: - Identifiers: dom_comuna, year - Key Variables:
 
-    - `popln`: Population within the age range
-    - `births`: Number of births within the age range
-    - `pill`: Indicator for pill usage
-    - `pilldistance`: Distance to the nearest pill distribution point
-    - `early_deaths`: Number of early deaths within the age range
-    - `birth_rate`: Birth rate per 1000 women
-    - `death_rate`: Early death rate per 1000 live births
-    - `trend`: Linear time trend within each municipality
-    - `close10`: Indicator for being close to the nearest treated municipality within 10 km (requires pill == 0)
-    - `close20`: Indicator for being close to the nearest treated municipality within 10-20 km (requires pill == 0)
-    - `close30`: Indicator for being close to the nearest treated municipality within 20-30 km (requires pill == 0)
-    - `first_treat`: First year municipality has pill == 1 (0 if never treated)
-    - `is_switcher`: Indicator for whether pill reverts from 1 to 0 at any point
-    - `is_spillover`: Indicator for never-treated municipalities close to a treated one
+```         
+- `popln`: Population within the age range
+- `births`: Number of births within the age range
+- `pill`: Indicator for pill usage
+- `pilldistance`: Distance to the nearest pill distribution point
+- `early_deaths`: Number of early deaths within the age range
+- `birth_rate`: Birth rate per 1000 women
+- `death_rate`: Early death rate per 1000 live births
+- `trend`: Linear time trend within each municipality
+- `close10`: Indicator for being close to the nearest treated municipality within 10 km (requires pill == 0)
+- `close20`: Indicator for being close to the nearest treated municipality within 10-20 km (requires pill == 0)
+- `close30`: Indicator for being close to the nearest treated municipality within 20-30 km (requires pill == 0)
+- `first_treat`: First year municipality has pill == 1 (0 if never treated)
+- `is_switcher`: Indicator for whether pill reverts from 1 to 0 at any point
+- `is_spillover`: Indicator for never-treated municipalities close to a treated one
+```
 
 - Covariates:
 
-    - `X_party_` Series: Dummy variables for the mayor's political party
-    - `X_mujer`: Indicator for whether the mayor is female
-    - `X_votop`: The mayor's vote share/margin
-    - `X_outofschool`: Percentage of girls out of high school
-    - `X_educationspend`: Total education spending
-    - `X_educationmunicip`: Municipal-level education spending
-    - `X_healthspend`: Total health spending
-    - `X_healthtraining`: Health worker training spending
-    - `X_healthstaff`: Health staffing spending
-    - `X_femalepoverty`: Percentage of female-headed households below the poverty line
-    - `X_femaleworkers`: Percentage of female workers in professional/public positions
-    - `X_condom`: Condom availability/usage rate (regional level)
+  - `X_party_` Series: Dummy variables for the mayor's political party
+  - `X_mujer`: Indicator for whether the mayor is female
+  - `X_votop`: The mayor's vote share/margin
+  - `X_outofschool`: Percentage of girls out of high school
+  - `X_educationspend`: Total education spending
+  - `X_educationmunicip`: Municipal-level education spending
+  - `X_healthspend`: Total health spending
+  - `X_healthtraining`: Health worker training spending
+  - `X_healthstaff`: Health staffing spending
+  - `X_femalepoverty`: Percentage of female-headed households below the poverty line
+  - `X_femaleworkers`: Percentage of female workers in professional/public positions
+  - `X_condom`: Condom availability/usage rate (regional level)
 
 ```{r}
 # Covariates:
@@ -745,4 +745,3 @@ write.csv(result_overall_comparison, paste0(DIR_OUT, "result_overall_comparison.
 cat("\n===== Comparison of Results =====\n")
 result_overall_comparison
 ```
-
