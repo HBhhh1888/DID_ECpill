@@ -12,6 +12,7 @@ This project asks whether those TWFE conclusions are robust to modern staggered-
 The repository is structured as follows:
 
 ```
+DID_ECpill/
 ├── DID_ECpill.qmd     # Main analysis file (Quarto, R)
 ├── Data/              # Input data (see Data Source below)
 ├── Output/            # CSV results produced by rendering DID_ECpill.qmd
