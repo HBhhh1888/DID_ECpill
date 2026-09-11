@@ -1,7 +1,0 @@
-"age_group","model_spec","outcome","spec","n_obs","n_municipal","coef","se","p_value","ci_lower","ci_upper","se_method"
-"all_women","Birth Rate & All Age","birth_rate","spillover_close_bins",1934,336,0.0075326365676506,1.13822184867332,0.995995995995996,NA,NA,"wild_cluster_bootstrap"
-"all_women","Death Rate & All Age","death_rate","spillover_close_bins",1913,333,0.149090065011528,0.338986175852564,0.702702702702703,-0.536438094173351,0.829610190183074,"wild_cluster_bootstrap"
-"teens","Birth Rate & Teens","birth_rate","spillover_close_bins",1929,335,-0.95707628860202,1.90428926147595,0.627627627627628,-4.85210193943086,2.99078976988312,"wild_cluster_bootstrap"
-"teens","Death Rate & Teens","death_rate","spillover_close_bins",1887,330,-1.73388220109683,1.20828423152986,0.169169169169169,-4.0578250011583,0.565934027095462,"wild_cluster_bootstrap"
-"young_adult","Birth Rate & Young Adult","birth_rate","spillover_close_bins",1934,336,-0.934962607926821,1.94432667306877,0.641641641641642,-4.75824546138616,3.15927351385701,"wild_cluster_bootstrap"
-"young_adult","Death Rate & Young Adult","death_rate","spillover_close_bins",1910,333,0.469844897651317,0.339327472691838,0.18018018018018,-0.207662046550414,1.16011018656457,"wild_cluster_bootstrap"
