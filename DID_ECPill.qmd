@@ -10,6 +10,8 @@ editor: visual
 ```{r}
 # Clear the workspace
 rm(list = ls())
+
+
 ```
 
 ```{r}
