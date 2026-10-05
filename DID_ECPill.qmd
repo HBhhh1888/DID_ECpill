@@ -14,8 +14,10 @@ rm(list = ls())
 
 ```{r}
 # Directories for data and output
-DIR_DATA <- "Data/"
-DIR_OUT  <- "Output/"
+DIR_DATA      <- "Data/"
+DIR_DATA_PROC <- "Data_Processed/"
+DIR_OUT       <- "Output/"
+dir.create(DIR_DATA_PROC, showWarnings = FALSE, recursive = TRUE)
 dir.create(DIR_OUT, showWarnings = FALSE, recursive = TRUE)
 ```
 
@@ -72,9 +74,10 @@ Summary of raw data:
 
 ### (2) Data processing: Aggregate granular data into a municipality x year panel
 
-Data structure after aggregation: - Identifiers: dom_comuna, year - Key Variables:
+Data structure after aggregation: - Identifiers: `dom_comuna`, `year` 
 
-```         
+Key Variables:
+
 - `popln`: Population within the age range
 - `births`: Number of births within the age range
 - `pill`: Indicator for pill usage
@@ -89,22 +92,22 @@ Data structure after aggregation: - Identifiers: dom_comuna, year - Key Variable
 - `first_treat`: First year municipality has pill == 1 (0 if never treated)
 - `is_switcher`: Indicator for whether pill reverts from 1 to 0 at any point
 - `is_spillover`: Indicator for never-treated municipalities close to a treated one
-```
 
-- Covariates:
 
-  - `X_party_` Series: Dummy variables for the mayor's political party
-  - `X_mujer`: Indicator for whether the mayor is female
-  - `X_votop`: The mayor's vote share/margin
-  - `X_outofschool`: Percentage of girls out of high school
-  - `X_educationspend`: Total education spending
-  - `X_educationmunicip`: Municipal-level education spending
-  - `X_healthspend`: Total health spending
-  - `X_healthtraining`: Health worker training spending
-  - `X_healthstaff`: Health staffing spending
-  - `X_femalepoverty`: Percentage of female-headed households below the poverty line
-  - `X_femaleworkers`: Percentage of female workers in professional/public positions
-  - `X_condom`: Condom availability/usage rate (regional level)
+Covariates:
+
+- `X_party_` Series: Dummy variables for the mayor's political party
+- `X_mujer`: Indicator for whether the mayor is female
+- `X_votop`: The mayor's vote share/margin
+- `X_outofschool`: Percentage of girls out of high school
+- `X_educationspend`: Total education spending (in 100,000 units)
+- `X_educationmunicip`: Municipal-level education spending (in 100,000 units)
+- `X_healthspend`: Total health spending (in 100,000 units)
+- `X_healthtraining`: Health worker training spending (in 100,000 units)
+- `X_healthstaff`: Health staffing spending (in 100,000 units)
+- `X_femalepoverty`: Percentage of female-headed households below the poverty line
+- `X_femaleworkers`: Percentage of female workers in professional/public positions
+- `X_condom`: Condom availability/usage rate (regional level)
 
 ```{r}
 # Covariates:
@@ -115,6 +118,9 @@ X_cols <- c(
   "femalepoverty", "femaleworkers",                    # Female-related variables
   "condom"                                             # Contraceptive use
 )
+
+# Spending covariates are rescaled to units of 100,000 (as in the original code)
+X_spend_cols <- c("educationspend", "educationmunicip", "healthspend", "healthtraining", "healthstaff")
 ```
 
 ```{r}
@@ -141,7 +147,8 @@ get_model_data <- function(age_lo, age_hi) {
 
   agg_births <- agg_births |>
     select(-party) |>
-    rename_with(~ paste0("X_", .x), .cols = setdiff(X_cols, "party"))
+    rename_with(~ paste0("X_", .x), .cols = setdiff(X_cols, "party")) |>
+    mutate(across(all_of(paste0("X_", X_spend_cols)), ~ .x / 1e5))
 
   # Aggregate deaths data by municipality and year
   agg_deaths <- data_raw_deaths |>
@@ -190,6 +197,11 @@ get_model_data <- function(age_lo, age_hi) {
 data_age1 <- get_model_data(15, 49)   # All women
 data_age2 <- get_model_data(15, 19)   # Teens 15-19 years old
 data_age3 <- get_model_data(20, 34)   # Young adults 20-34 years old
+
+# Save processed municipality x year panels
+write.csv(data_age1, paste0(DIR_DATA_PROC, "data_age1.csv"), row.names = FALSE)
+write.csv(data_age2, paste0(DIR_DATA_PROC, "data_age2.csv"), row.names = FALSE)
+write.csv(data_age3, paste0(DIR_DATA_PROC, "data_age3.csv"), row.names = FALSE)
 
 # Summary of aggregated data
 cat(glue("
@@ -250,6 +262,55 @@ write.csv(summary_stats, paste0(DIR_OUT, "results_data_summary_stats.csv"), row.
 
 cat("\n===== Descriptive Statistics by Age Group =====\n")
 summary_stats
+```
+
+```{r}
+# Continuous covariates vs. discrete (0/1) covariates
+X_discr_cols <- c("X_mujer", grep("^X_party_", names(data_age1), value = TRUE))
+X_count_cols <- setdiff(grep("^X_", names(data_age1), value = TRUE), X_discr_cols)
+
+# Function to compute descriptive statistics of the continuous covariates
+get_summary_stats_cov_count <- function(df) {
+  df |>
+    select(all_of(X_count_cols)) |>
+    pivot_longer(everything(), names_to = "variable") |>
+    summarise(
+      n      = sum(!is.na(value)),
+      mean   = mean(value, na.rm = TRUE),
+      sd     = sd(value, na.rm = TRUE),
+      min    = min(value, na.rm = TRUE),
+      p25    = quantile(value, 0.25, na.rm = TRUE),
+      median = median(value, na.rm = TRUE),
+      p75    = quantile(value, 0.75, na.rm = TRUE),
+      max    = max(value, na.rm = TRUE),
+      .by    = variable
+    )
+}
+
+# Function to compute descriptive statistics of the discrete (0/1) covariates
+get_summary_stats_cov_discr <- function(df) {
+  df |>
+    select(all_of(X_discr_cols)) |>
+    pivot_longer(everything(), names_to = "variable") |>
+    summarise(
+      n         = sum(!is.na(value)),
+      n_one     = sum(value == 1, na.rm = TRUE),
+      share_one = mean(value == 1, na.rm = TRUE),
+      .by       = variable
+    )
+}
+
+summary_stats_cov_count <- get_summary_stats_cov_count(data_age1)
+summary_stats_cov_discr <- get_summary_stats_cov_discr(data_age1)
+
+write.csv(summary_stats_cov_count, paste0(DIR_OUT, "results_data_summary_stats_cov_count.csv"), row.names = FALSE)
+write.csv(summary_stats_cov_discr, paste0(DIR_OUT, "results_data_summary_stats_cov_discr.csv"), row.names = FALSE)
+
+cat("\n===== Descriptive Statistics of Continuous Covariates =====\n")
+summary_stats_cov_count
+
+cat("\n===== Descriptive Statistics of Discrete Covariates =====\n")
+summary_stats_cov_discr
 ```
 
 ## Stage 1: TWFE Replication + De Chaisemartin & D'Haultfoeuille (2020) Diagnostic
@@ -345,21 +406,28 @@ run_twfe <- function(df, outcome, model_spec, baseline_only = FALSE) {
   f_base <- as.formula(paste(outcome, "~ pill | dom_comuna + year"))
   m_base <- feols(f_base, data = df)
 
-  # Skip the other two specifications if only the baseline is needed (e.g. for the restricted sample)
+  # Skip the other specifications if only the baseline is needed (e.g. for the restricted sample)
   if (baseline_only) {
     return(extract(m_base, "baseline_TWFE"))
   }
 
-  # Remaining two formulas, following Table 4 column (2) and Table 5 column (3) of Bentancor and Clarke (2017)
+  # Remaining formulas, following Table 4 columns (2) and (3), and Table 5 column (3) of Bentancor and Clarke (2017)
   f_trend <- as.formula(paste(outcome, "~ pill + i(dom_comuna, trend) | dom_comuna + year"))
 
+  # Time-varying controls, following Table 4 column (3); the first party dummy is dropped to avoid the dummy variable trap
+  x_vars <- grep("^X_", names(df), value = TRUE)
+  x_vars <- setdiff(x_vars, grep("^X_party_", x_vars, value = TRUE)[1])
+  f_cov  <- as.formula(paste(outcome, "~ pill +", paste(x_vars, collapse = " + "), "| dom_comuna + year"))
+
   m_trend   <- feols(f_trend, data = df)
+  m_cov     <- feols(f_cov,   data = df)
   m_base_pw <- feols(f_base,  data = df, weights = ~popln)
 
-  # Run the extraction function on each of the three TWFE models
+  # Run the extraction function on each of the four TWFE models
   result <- bind_rows(
     extract(m_base,    "baseline_TWFE"),
     extract(m_trend,   "TWFE_with_trends"),
+    extract(m_cov,     "TWFE_with_covariates"),
     extract(m_base_pw, "baseline_popln_weighted")
   )
 
@@ -380,7 +448,7 @@ results_s1t1_twfe_origin <- bind_rows(twfe_11, twfe_12, twfe_21, twfe_22, twfe_3
 write.csv(results_s1t1_twfe_origin, paste0(DIR_OUT, "results_s1t1_twfe_origin.csv"), row.names = FALSE)
 
 cat("\n===== Stage 1 Task 1: Baseline TWFE Estimates (6 Groups) =====\n")
-results_s1t1_twfe_origin |> filter(spec == "baseline_TWFE")
+results_s1t1_twfe_origin
 ```
 
 ### (2) Stage 1 Task 2: De Chaisemartin & D'Haultfoeuille (2020) Diagnostics
@@ -508,6 +576,11 @@ remove_spillover_contaminated <- function(panel, age_group) {
 data_age1_sp <- remove_spillover_contaminated(data_age1, "All Women")
 data_age2_sp <- remove_spillover_contaminated(data_age2, "Teens")
 data_age3_sp <- remove_spillover_contaminated(data_age3, "Young Adults")
+
+# Save processed municipality x year panels
+write.csv(data_age1_sp, paste0(DIR_DATA_PROC, "data_age1_sp.csv"), row.names = FALSE)
+write.csv(data_age2_sp, paste0(DIR_DATA_PROC, "data_age2_sp.csv"), row.names = FALSE)
+write.csv(data_age3_sp, paste0(DIR_DATA_PROC, "data_age3_sp.csv"), row.names = FALSE)
 ```
 
 ```{r}
@@ -553,6 +626,11 @@ remove_switchers <- function(panel, age_group) {
 data_age1_ns <- remove_switchers(data_age1, "All Women")
 data_age2_ns <- remove_switchers(data_age2, "Teens")
 data_age3_ns <- remove_switchers(data_age3, "Young Adults")
+
+# Save processed municipality x year panels
+write.csv(data_age1_ns, paste0(DIR_DATA_PROC, "data_age1_ns.csv"), row.names = FALSE)
+write.csv(data_age2_ns, paste0(DIR_DATA_PROC, "data_age2_ns.csv"), row.names = FALSE)
+write.csv(data_age3_ns, paste0(DIR_DATA_PROC, "data_age3_ns.csv"), row.names = FALSE)
 ```
 
 ```{r}
@@ -583,7 +661,7 @@ add_id_num <- function(panel) {
 
 ```{r}
 # Function to run the Callaway & Sant'Anna (2021)
-run_cs <- function(panel, outcome, age_group, control_group = "nevertreated", weights_col = NULL) {
+run_cs <- function(panel, outcome, age_group, control_group = "nevertreated", weights_col = NULL, base_period = "varying") {
 
   # Add a numeric municipality id (required by the did package)
   dat <- add_id_num(panel)
@@ -606,12 +684,13 @@ run_cs <- function(panel, outcome, age_group, control_group = "nevertreated", we
       clustervars            = "id_num",
       bstrap                 = TRUE,
       biters                 = 1000,
-      base_period            = "varying"
+      base_period            = base_period
     )))
   ))
 
-  # Aggregate the ATT estimates using the "simple" method
-  simple_agg <- aggte(att, type = "simple")
+  # Aggregate the ATT estimates using the "group" method: theta_sel^o in Equation (9), i.e. the average of
+  # theta_sel(g) across cohorts, weighted by cohort size (overall.att of the "group" aggregation)
+  simple_agg <- aggte(att, type = "group")
 
   # Compute the p-value for the overall ATT estimate using a normal approximation
   p_value <- 2 * pnorm(-abs(simple_agg$overall.att / simple_agg$overall.se))
@@ -718,6 +797,79 @@ write.csv(results_s2t3_pretrends, paste0(DIR_OUT, "results_s2t3_pretrends.csv"),
 
 cat("\n===== Stage 2 Task 3: Pre-treatment Dynamic Effects (Placebo-style Pre-trends Check) =====\n")
 results_s2t3_pretrends
+```
+
+```{r}
+# Event-study plot for all 3 age groups and both outcomes on the switcher-excluded restricted sample.
+es_11 <- run_cs(data_age1_ns, "birth_rate", "all_women",   base_period = "universal")
+es_12 <- run_cs(data_age1_ns, "death_rate", "all_women",   base_period = "universal")
+es_21 <- run_cs(data_age2_ns, "birth_rate", "teens",       base_period = "universal")
+es_22 <- run_cs(data_age2_ns, "death_rate", "teens",       base_period = "universal")
+es_31 <- run_cs(data_age3_ns, "birth_rate", "young_adult", base_period = "universal")
+es_32 <- run_cs(data_age3_ns, "death_rate", "young_adult", base_period = "universal")
+
+extract_event_study <- function(cs_obj, age_group, outcome) {
+  d <- cs_obj$dynamic
+
+  tibble(
+    age_group  = age_group,
+    outcome    = outcome,
+    event_time = d$egt,
+    att        = d$att.egt,
+    se         = d$se.egt,
+    crit_val   = d$crit.val.egt
+  ) |>
+    filter(event_time >= -4) |>
+    mutate(
+      # The reference period (e = -1) is normalised to zero and has no standard error
+      se       = if_else(is.na(se), 0, se),
+      # Uniform (simultaneous) confidence band, consistent with the critical value used in the pre-trends table
+      ci_lower = att - crit_val * se,
+      ci_upper = att + crit_val * se
+    )
+}
+
+results_s2t3_eventstudy <- bind_rows(
+  extract_event_study(es_11, "all_women",   "birth_rate"),
+  extract_event_study(es_12, "all_women",   "death_rate"),
+  extract_event_study(es_21, "teens",       "birth_rate"),
+  extract_event_study(es_22, "teens",       "death_rate"),
+  extract_event_study(es_31, "young_adult", "birth_rate"),
+  extract_event_study(es_32, "young_adult", "death_rate")
+)
+
+write.csv(results_s2t3_eventstudy, paste0(DIR_OUT, "results_s2t3_eventstudy.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 3: Event-Study Estimates (Universal Base Period, 6 Groups) =====\n")
+results_s2t3_eventstudy
+```
+
+```{r}
+# Rows: age groups; columns: outcomes
+fig_eventstudy <- results_s2t3_eventstudy |>
+  mutate(
+    age_group = factor(age_group, levels = c("all_women", "teens", "young_adult"),
+                       labels = c("All women (15-49)", "Teens (15-19)", "Young adults (20-34)")),
+    outcome   = factor(outcome, levels = c("birth_rate", "death_rate"),
+                       labels = c("Birth rate (per 1,000 women)", "Death rate (per 1,000 births)"))
+  ) |>
+  ggplot(aes(x = event_time, y = att)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = -0.5, colour = "grey75") +
+  geom_pointrange(aes(ymin = ci_lower, ymax = ci_upper), size = 0.4) +
+  facet_grid(age_group ~ outcome, scales = "free_y") +
+  scale_x_continuous(breaks = -4:1) +
+  labs(x = "Years relative to first treatment (e)", y = "ATT estimate") +
+  theme_minimal() +
+  theme(
+    # Separate the two columns clearly so that the birth-rate and death-rate panels are not read as one plot
+    panel.spacing.x = unit(2.5, "lines"),
+    panel.border    = element_rect(colour = "grey60", fill = NA)
+  )
+
+ggsave(paste0(DIR_OUT, "figure_s2t3_eventstudy.png"), fig_eventstudy, width = 10, height = 8, dpi = 300, bg = "white")
+
+fig_eventstudy
 ```
 
 ## Comparison of Results
