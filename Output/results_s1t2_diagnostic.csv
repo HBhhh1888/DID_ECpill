@@ -1,7 +1,19 @@
-"age_group","model_spec","outcome","sum_plus","sum_minus","share_negative","min_sd_flip","n_obs","n_municipal"
-"all_women","Birth Rate & All Age","birth_rate",0.999999999999995,0,0,3.18298163763865,1934,336
-"all_women","Death Rate & All Age","death_rate",1.00000000000001,0,0,0.0645984366134216,1913,333
-"teens","Birth Rate & Teens","birth_rate",1,0,0,5.13896313466666,1929,335
-"teens","Death Rate & Teens","death_rate",1,0,0,4.62338926019295,1887,330
-"young_adult","Birth Rate & Young Adult","birth_rate",0.999999999999995,0,0,5.62059693188668,1934,336
-"young_adult","Death Rate & Young Adult","death_rate",1,0,0,1.84638580721052,1910,333
+"age_group","model_spec","outcome","spec","sum_plus","sum_minus","share_negative","min_sd_flip","n_obs","n_municipal"
+"all_women","Birth Rate & All Age","birth_rate","baseline",0.999999999999995,0,0,3.18298163763865,1934,336
+"all_women","Death Rate & All Age","death_rate","baseline",1.00000000000001,0,0,0.0645984366134218,1913,333
+"teens","Birth Rate & Teens","birth_rate","baseline",1,0,0,5.13896313466667,1929,335
+"teens","Death Rate & Teens","death_rate","baseline",1,0,0,4.62338926019295,1887,330
+"young_adult","Birth Rate & Young Adult","birth_rate","baseline",0.999999999999995,0,0,5.62059693188668,1934,336
+"young_adult","Death Rate & Young Adult","death_rate","baseline",1,0,0,1.84638580721053,1910,333
+"all_women","Birth Rate & All Age","birth_rate","full",1,0,0,2.55877561687507,1934,336
+"all_women","Death Rate & All Age","death_rate","full",1,0,0,0.156411156107472,1913,333
+"teens","Birth Rate & Teens","birth_rate","full",1,0,0,4.91802786634128,1929,335
+"teens","Death Rate & Teens","death_rate","full",1,0,0,4.37498496013757,1887,330
+"young_adult","Birth Rate & Young Adult","birth_rate","full",1,0,0,4.66038950519956,1934,336
+"young_adult","Death Rate & Young Adult","death_rate","full",1,0,0,1.79101196021652,1910,333
+"all_women","Birth Rate & All Age","birth_rate","popln_weighted",1,0,0,1.95331931486186,1934,336
+"all_women","Death Rate & All Age","death_rate","popln_weighted",1,0,0,0.129010651047822,1913,333
+"teens","Birth Rate & Teens","birth_rate","popln_weighted",1,0,0,1.06841261810523,1929,335
+"teens","Death Rate & Teens","death_rate","popln_weighted",1,0,0,1.11226171274382,1887,330
+"young_adult","Birth Rate & Young Adult","birth_rate","popln_weighted",1,0,0,3.1838365749499,1934,336
+"young_adult","Death Rate & Young Adult","death_rate","popln_weighted",1,0,0,0.833496437322201,1910,333

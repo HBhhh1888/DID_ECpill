@@ -1,0 +1,532 @@
+---
+title: "Stage 1"
+author: "Haobing Wang"
+format: html
+editor: visual
+---
+
+This notebook:
+
+- replicates the TWFE specifications of Bentancor and Clarke (2017)
+
+- computes the De Chaisemartin & D'Haultfoeuille (2020) diagnostics
+
+- runs the two spillover robustness checks,
+
+- re-estimates TWFE on the switcher-excluded restricted sample, and
+
+- re-estimates TWFE with the current-year pill instead of its one-year lag (timing check), and with the one-year lag on the same rows (like-for-like comparison)
+
+Please make sure to run `Data_Process.ipynb` beforehand to generate the necessary input data.
+
+## Libraries & Configurations
+
+```{r}
+# Clear the workspace
+rm(list = ls())
+```
+
+```{r}
+# Directories for data and output
+DIR_DATA_PROC <- "Data_Processed/"
+DIR_OUT       <- "Output/"
+dir.create(DIR_OUT, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# Library packages
+library(tidyverse)
+library(glue)
+library(fixest)
+library(fwildclusterboot)
+library(broom)
+library(TwoWayFEWeights)
+
+# Silence fixest's collinearity/removed-fixed-effects notes
+fixest::setFixest_notes(FALSE)
+```
+
+## Load Data
+
+```{r}
+# Load the processed municipality x year panels saved by Data_Process.ipynb
+read_panel <- function(name) {
+  read.csv(paste0(DIR_DATA_PROC, name, ".csv"), stringsAsFactors = FALSE) |>
+    mutate(dom_comuna = factor(dom_comuna))
+}
+
+data_age1    <- read_panel("data_age1")
+data_age2    <- read_panel("data_age2")
+data_age3    <- read_panel("data_age3")
+data_age1_cp <- read_panel("data_age1_cp")
+data_age2_cp <- read_panel("data_age2_cp")
+data_age3_cp <- read_panel("data_age3_cp")
+```
+
+```{r}
+# Restricted samples, selected with the indicators in the panels (droplevels() drops the municipalities that are no longer in the sample)
+#   _sp:   spillover-excluded (is_spillover == 0)
+#   _ns:   switcher-excluded (is_switcher == 0)
+#   _cpns: current-pill data, switcher-excluded
+#   _lg:   lagged-pill data on the same rows as the current-pill data (in_cp == 1); _lgns: switcher-excluded
+data_age1_sp   <- data_age1 |> filter(is_spillover == 0) |> droplevels()
+data_age2_sp   <- data_age2 |> filter(is_spillover == 0) |> droplevels()
+data_age3_sp   <- data_age3 |> filter(is_spillover == 0) |> droplevels()
+
+data_age1_ns   <- data_age1 |> filter(is_switcher == 0) |> droplevels()
+data_age2_ns   <- data_age2 |> filter(is_switcher == 0) |> droplevels()
+data_age3_ns   <- data_age3 |> filter(is_switcher == 0) |> droplevels()
+
+data_age1_cpns <- data_age1_cp |> filter(is_switcher == 0) |> droplevels()
+data_age2_cpns <- data_age2_cp |> filter(is_switcher == 0) |> droplevels()
+data_age3_cpns <- data_age3_cp |> filter(is_switcher == 0) |> droplevels()
+
+data_age1_lg   <- data_age1 |> filter(in_cp == 1) |> droplevels()
+data_age2_lg   <- data_age2 |> filter(in_cp == 1) |> droplevels()
+data_age3_lg   <- data_age3 |> filter(in_cp == 1) |> droplevels()
+
+data_age1_lgns <- data_age1 |> filter(in_cp == 1, is_switcher == 0) |> droplevels()
+data_age2_lgns <- data_age2 |> filter(in_cp == 1, is_switcher == 0) |> droplevels()
+data_age3_lgns <- data_age3 |> filter(in_cp == 1, is_switcher == 0) |> droplevels()
+
+# Check the sizes of the samples
+samples <- list(
+  `full`                                   = list(data_age1, data_age2, data_age3),
+  `spillover-excluded`                     = list(data_age1_sp, data_age2_sp, data_age3_sp),
+  `switcher-excluded`                      = list(data_age1_ns, data_age2_ns, data_age3_ns),
+  `current pill`                           = list(data_age1_cp, data_age2_cp, data_age3_cp),
+  `current pill, switcher-excluded`        = list(data_age1_cpns, data_age2_cpns, data_age3_cpns),
+  `lagged pill, same rows`                 = list(data_age1_lg, data_age2_lg, data_age3_lg),
+  `lagged pill, same rows, switcher-excl.` = list(data_age1_lgns, data_age2_lgns, data_age3_lgns)
+)
+sample_sizes <- imap_dfr(samples, \(dfs, nm) tibble(
+  sample     = nm,
+  age_group  = c("all_women", "teens", "young_adult"),
+  n_municipal = map_int(dfs, \(x) n_distinct(x$dom_comuna)),
+  n_obs      = map_int(dfs, nrow)
+))
+cat("\n===== Sample sizes (municipalities and municipality-years) =====\n")
+sample_sizes
+```
+
+## TWFE Replication + De Chaisemartin & D'Haultfoeuille (2020) Diagnostic
+
+### (1) Stage 1 Task 1: TWFE Replication
+
+```{r}
+# Function to compute standard errors: wild cluster bootstrap, falling back to cluster-robust (CRV1)
+run_boottest <- function(model, param, cluster_var, spec_name) {
+
+  # Try to run the wild cluster bootstrap first
+  boot_obj <- tryCatch(
+    {
+      # boottest() draws its bootstrap weights via dqrng
+      dqrng::dqset.seed(2727)
+
+      # Swallow boottest()'s own printed diagnostics
+      invisible(capture.output(
+        boot_result <- suppressWarnings(suppressMessages(
+          boottest(model, param = param, clustid = cluster_var, B = 999, nthreads = 1)
+        ))
+      ))
+
+      boot_result
+    },
+    
+    error = function(e) {
+      cat(glue("[{spec_name}] failed to run wild cluster bootstrap({conditionMessage(e)}), and change to cluster-robust(CRV1) standard errors\n"))
+      return(NULL)
+    }
+  )
+
+  # If the wild cluster bootstrap does not fail, extract the results and format them into a tibble
+  if (!is.null(boot_obj)) {
+    bt <- broom::tidy(boot_obj)
+
+    result <- tibble(
+      coef      = bt$estimate[1],
+      se        = bt$estimate[1] / bt$statistic[1],
+      p_value   = bt$p.value[1],
+      ci_lower  = bt$conf.low[1],
+      ci_upper  = bt$conf.high[1],
+      se_method = "wild_cluster_bootstrap"
+    )
+  }
+  # If the wild cluster bootstrap fails, fall back to cluster-robust standard errors (CRV1)
+  else {
+    s  <- summary(model, cluster = cluster_var)
+    ct <- s$coeftable[param, ]
+    ci <- confint(s)[param, ]
+    result <- tibble(
+      coef      = unname(ct[["Estimate"]]),
+      se        = unname(ct[["Std. Error"]]),
+      p_value   = unname(ct[["Pr(>|t|)"]]),
+      ci_lower  = unname(ci[[1]]),
+      ci_upper  = unname(ci[[2]]),
+      se_method = "cluster_robust_CRV1_fallback"
+    )
+  }
+
+  return(result)
+}
+```
+
+```{r}
+# Function to run TWFE regression with optional population weighting and wild cluster bootstrap for standard errors
+run_twfe <- function(df, outcome, model_spec, baseline_only = FALSE) {
+
+  # Data for the model
+  df <- df |>
+    filter(is.finite(.data[[outcome]])) |>
+    group_by(dom_comuna) |>
+    filter(n() > 1) |>
+    ungroup() |>
+    mutate(dom_comuna = droplevels(dom_comuna))
+
+  # Base R seed; boottest()'s own draws are seeded separately (see run_boottest())
+  set.seed(2727)
+
+  # Function to extract results from a model using wild cluster bootstrap
+  extract <- function(model, spec_name) {
+    run_boottest(model, "pill", "dom_comuna", spec_name) |>
+      mutate(
+        model_spec  = model_spec,
+        outcome     = outcome,
+        spec        = spec_name,
+        n_obs       = nobs(model),
+        n_municipal = n_distinct(df$dom_comuna[obs(model)]),
+        .before = 1
+      )
+  }
+
+  # Baseline model, following Table 4 column (1) of Bentancor and Clarke (2017)
+  f_base <- as.formula(paste(outcome, "~ pill | dom_comuna + year"))
+  m_base <- feols(f_base, data = df)
+
+  # Skip the other specifications if only the baseline is needed (e.g. for the restricted sample)
+  if (baseline_only) {
+    return(extract(m_base, "baseline_TWFE"))
+  }
+
+  # Remaining formulas, following Table 4 columns (2) and (3), and Table 5 column (3) of Bentancor and Clarke (2017)
+  f_trend <- as.formula(paste(outcome, "~ pill + i(dom_comuna, trend) | dom_comuna + year"))
+
+  # Time-varying controls, following Table 4 column (3); the first party dummy is dropped to avoid the dummy variable trap
+  x_vars <- grep("^X_", names(df), value = TRUE)
+  x_vars <- setdiff(x_vars, grep("^X_party_", x_vars, value = TRUE)[1])
+  f_cov  <- as.formula(paste(outcome, "~ pill +", paste(x_vars, collapse = " + "), "| dom_comuna + year"))
+
+  m_trend   <- feols(f_trend, data = df)
+  m_cov     <- feols(f_cov,   data = df)
+  m_base_pw <- feols(f_base,  data = df, weights = ~popln)
+
+  # Run the extraction function on each of the four TWFE models
+  result <- bind_rows(
+    extract(m_base,    "baseline_TWFE"),
+    extract(m_trend,   "TWFE_with_trends"),
+    extract(m_cov,     "TWFE_with_covariates"),
+    extract(m_base_pw, "baseline_popln_weighted")
+  )
+
+  return(result)
+}
+```
+
+```{r}
+# Run the TWFE regressions for all 3 age groups and 2 outcomes
+twfe_11 <- run_twfe(data_age1, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_12 <- run_twfe(data_age1, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_21 <- run_twfe(data_age2, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_22 <- run_twfe(data_age2, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_31 <- run_twfe(data_age3, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_32 <- run_twfe(data_age3, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t1_twfe_origin <- bind_rows(twfe_11, twfe_12, twfe_21, twfe_22, twfe_31, twfe_32)
+
+write.csv(results_s1t1_twfe_origin, paste0(DIR_OUT, "results_s1t1_twfe_origin.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 1: Baseline TWFE Estimates (6 Groups) =====\n")
+results_s1t1_twfe_origin
+```
+
+### (2) Stage 1 Task 2: De Chaisemartin & D'Haultfoeuille (2020) Diagnostics
+
+```{r}
+# Function to compute the De Chaisemartin & D'Haultfoeuille (2020) TWFE diagnostics for one TWFE specification
+#   spec = "baseline":        no controls, unweighted (matches the baseline TWFE model)
+#   spec = "full":            with the time-varying controls X, unweighted (matches the Full Model)
+#   spec = "popln_weighted":  no controls, weighted by Popln (matches the population-weighted model)
+run_diagnostic <- function(df, outcome, model_spec, spec = c("baseline", "full", "popln_weighted")) {
+
+  spec <- match.arg(spec)
+
+  # Data for the diagnostic function
+  df <- df |>
+    filter(is.finite(.data[[outcome]])) |>
+    group_by(dom_comuna) |>
+    filter(n() > 1) |>
+    ungroup() |>
+    as.data.frame()
+
+  # Time-varying controls, the same as in run_twfe()
+  x_vars <- grep("^X_", names(df), value = TRUE)
+  x_vars <- setdiff(x_vars, grep("^X_party_", x_vars, value = TRUE)[1])
+
+  # Diagnostic using TwoWayFEWeights
+  diag <- TwoWayFEWeights::twowayfeweights(
+    data              = df,
+    Y                 = outcome,
+    G                 = "dom_comuna",
+    T                 = "year",
+    D                 = "pill",
+    type              = "feTR",                                            # Use the "feTR" type for the TwoWayFEWeights diagnostic
+    controls          = if (spec == "full") x_vars else NULL,              # Time-varying controls for the Full Model
+    weights           = if (spec == "popln_weighted") df$popln else NULL,  # Population weights
+    summary_measures  = TRUE                                               # Return summary measures for the diagnostic
+  )
+
+  # Summarize the diagnostic results into a tibble
+  result <- tibble(
+    model_spec     = model_spec,
+    outcome        = outcome,
+    spec           = spec,
+    sum_plus       = diag$sum_plus,                                  # Sum of positive weights
+    sum_minus      = diag$sum_minus,                                 # Sum of negative weights
+    share_negative = diag$nr_minus / (diag$nr_plus + diag$nr_minus), # Share of negative weights (by number of ATT(g,t) cells)
+    min_sd_flip    = diag$sensibility,                               # Minimum treatment effect standard deviation (Corollary 1)
+    n_obs          = nrow(df),
+    n_municipal    = n_distinct(df$dom_comuna)
+  )
+
+  return(result)
+}
+```
+
+```{r}
+# Run the diagnostic function for all 3 age groups and 2 outcomes
+run_diagnostic_all <- function(spec) {
+  bind_rows(
+    run_diagnostic(data_age1, "birth_rate", "Birth Rate & All Age",     spec) |> mutate(age_group = "all_women",   .before = 1),
+    run_diagnostic(data_age1, "death_rate", "Death Rate & All Age",     spec) |> mutate(age_group = "all_women",   .before = 1),
+    run_diagnostic(data_age2, "birth_rate", "Birth Rate & Teens",       spec) |> mutate(age_group = "teens",       .before = 1),
+    run_diagnostic(data_age2, "death_rate", "Death Rate & Teens",       spec) |> mutate(age_group = "teens",       .before = 1),
+    run_diagnostic(data_age3, "birth_rate", "Birth Rate & Young Adult", spec) |> mutate(age_group = "young_adult", .before = 1),
+    run_diagnostic(data_age3, "death_rate", "Death Rate & Young Adult", spec) |> mutate(age_group = "young_adult", .before = 1)
+  )
+}
+
+results_s1t2_diagnostic <- bind_rows(
+  run_diagnostic_all("baseline"),
+  run_diagnostic_all("full"),
+  run_diagnostic_all("popln_weighted")
+)
+
+write.csv(results_s1t2_diagnostic,   paste0(DIR_OUT, "results_s1t2_diagnostic.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 2: De Chaisemartin & D'Haultfoeuille Diagnostics (Baseline, Full Model, Population-weighted) =====\n")
+results_s1t2_diagnostic
+```
+
+### (3) Stage 1 Task 3: Spillover Robustness Check
+
+#### (a) Check 1: Regression Based
+
+```{r}
+# Function to run the Full Model TWFE plus close10/close20/close30
+run_twfe_close <- function(df, outcome, model_spec) {
+
+  df <- df |>
+    filter(is.finite(.data[[outcome]])) |>
+    group_by(dom_comuna) |>
+    filter(n() > 1) |>
+    ungroup() |>
+    mutate(dom_comuna = droplevels(dom_comuna))
+
+  set.seed(2727)
+
+  # Time-varying controls of the Full Model
+  x_vars <- grep("^X_", names(df), value = TRUE)
+  x_vars <- setdiff(x_vars, grep("^X_party_", x_vars, value = TRUE)[1])
+
+  f_close <- as.formula(paste(outcome, "~ pill +", paste(x_vars, collapse = " + "), "+ close10 + close20 + close30 | dom_comuna + year"))
+  m_close <- feols(f_close, data = df)
+
+  run_boottest(m_close, "pill", "dom_comuna", "TWFE_close_controls") |>
+    mutate(
+      model_spec  = model_spec,
+      outcome     = outcome,
+      spec        = "TWFE_close_controls",
+      n_obs       = nobs(m_close),
+      n_municipal = n_distinct(df$dom_comuna[obs(m_close)]),
+      .before = 1
+    )
+}
+```
+
+```{r}
+# Run the Full Model close-controls TWFE regression for all 3 age groups and 2 outcomes
+close_11 <- run_twfe_close(data_age1, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+close_12 <- run_twfe_close(data_age1, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+close_21 <- run_twfe_close(data_age2, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+close_22 <- run_twfe_close(data_age2, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+close_31 <- run_twfe_close(data_age3, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+close_32 <- run_twfe_close(data_age3, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t3a_spillover_close <- bind_rows(close_11, close_12, close_21, close_22, close_31, close_32)
+write.csv(results_s1t3a_spillover_close, paste0(DIR_OUT, "results_s1t3a_spillover_close.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 3, Check 1: Full Model TWFE with Close Controls, Full Sample (6 Groups) =====\n")
+results_s1t3a_spillover_close
+```
+
+```{r}
+# Coefficients on close10, close20 and close30 in the same regression
+run_close_betas <- function(df, outcome, age_group) {
+
+  df <- df |>
+    filter(is.finite(.data[[outcome]])) |>
+    group_by(dom_comuna) |>
+    filter(n() > 1) |>
+    ungroup() |>
+    mutate(dom_comuna = droplevels(dom_comuna))
+
+  x_vars <- grep("^X_", names(df), value = TRUE)
+  x_vars <- setdiff(x_vars, grep("^X_party_", x_vars, value = TRUE)[1])
+
+  m_close <- feols(as.formula(paste(outcome, "~ pill +", paste(x_vars, collapse = " + "), "+ close10 + close20 + close30 | dom_comuna + year")), data = df)
+
+  map_dfr(c("close10", "close20", "close30"), \(v) {
+    run_boottest(m_close, v, "dom_comuna", "TWFE_close_controls") |> mutate(variable = v, .before = 1)
+  }) |>
+    mutate(age_group = age_group, outcome = outcome, .before = 1) |>
+    select(age_group, outcome, variable, coef, se, p_value)
+}
+
+close_betas <- bind_rows(
+  run_close_betas(data_age1, "birth_rate", "all_women"),
+  run_close_betas(data_age1, "death_rate", "all_women"),
+  run_close_betas(data_age2, "birth_rate", "teens"),
+  run_close_betas(data_age2, "death_rate", "teens"),
+  run_close_betas(data_age3, "birth_rate", "young_adult"),
+  run_close_betas(data_age3, "death_rate", "young_adult")
+)
+
+cat("\n===== Stage 1 Task 3, Check 1: Coefficients on close10, close20 and close30 (6 Groups) =====\n")
+close_betas |> mutate(across(c(coef, se, p_value), \(x) round(x, 3)))
+```
+
+#### (b) Check 2: Sample Restriction Based
+
+```{r}
+# Check 2: Run the four TWFE specifications 
+twfe_sp_11 <- run_twfe(data_age1_sp, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_sp_12 <- run_twfe(data_age1_sp, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_sp_21 <- run_twfe(data_age2_sp, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_sp_22 <- run_twfe(data_age2_sp, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_sp_31 <- run_twfe(data_age3_sp, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_sp_32 <- run_twfe(data_age3_sp, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t3b_spillover_excluded <- bind_rows(twfe_sp_11, twfe_sp_12, twfe_sp_21, twfe_sp_22, twfe_sp_31, twfe_sp_32)
+
+write.csv(results_s1t3b_spillover_excluded, paste0(DIR_OUT, "results_s1t3b_spillover_excluded.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 3, Check 2: TWFE (4 Specifications) on Spillover-Excluded Restricted Sample (6 Groups) =====\n")
+results_s1t3b_spillover_excluded
+```
+
+### (4) Stage 1 Task 4: TWFE Estimation on Switcher-Excluded Restricted Sample
+
+```{r}
+# Run all four TWFE specifications 
+twfe_ns_11 <- run_twfe(data_age1_ns, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_ns_12 <- run_twfe(data_age1_ns, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_ns_21 <- run_twfe(data_age2_ns, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_ns_22 <- run_twfe(data_age2_ns, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_ns_31 <- run_twfe(data_age3_ns, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_ns_32 <- run_twfe(data_age3_ns, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t4_twfe_ns <- bind_rows(twfe_ns_11, twfe_ns_12, twfe_ns_21, twfe_ns_22, twfe_ns_31, twfe_ns_32)
+
+write.csv(results_s1t4_twfe_ns, paste0(DIR_OUT, "results_s1t4_twfe_ns.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 4: TWFE Estimates (4 Specifications) on Switcher-Excluded Restricted Sample (6 Groups) =====\n")
+results_s1t4_twfe_ns
+```
+
+### (5) Stage 1 Task 5: TWFE Timing Checks
+
+#### (a) Current-Year Pill, Full Sample
+
+```{r}
+# Run all four TWFE specifications 
+twfe_cp_11 <- run_twfe(data_age1_cp, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_cp_12 <- run_twfe(data_age1_cp, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_cp_21 <- run_twfe(data_age2_cp, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_cp_22 <- run_twfe(data_age2_cp, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_cp_31 <- run_twfe(data_age3_cp, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_cp_32 <- run_twfe(data_age3_cp, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t5a_twfe_cp <- bind_rows(twfe_cp_11, twfe_cp_12, twfe_cp_21, twfe_cp_22, twfe_cp_31, twfe_cp_32)
+
+write.csv(results_s1t5a_twfe_cp, paste0(DIR_OUT, "results_s1t5a_twfe_cp.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 5a: TWFE Estimates (4 Specifications) with the Current-Year Pill, Full Sample (6 Groups) =====\n")
+results_s1t5a_twfe_cp
+```
+
+#### (b) Current-Year Pill, Switcher-Excluded Sample
+
+```{r}
+# Run all four TWFE specifications
+twfe_cpns_11 <- run_twfe(data_age1_cpns, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_cpns_12 <- run_twfe(data_age1_cpns, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_cpns_21 <- run_twfe(data_age2_cpns, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_cpns_22 <- run_twfe(data_age2_cpns, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_cpns_31 <- run_twfe(data_age3_cpns, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_cpns_32 <- run_twfe(data_age3_cpns, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t5b_twfe_cpns <- bind_rows(twfe_cpns_11, twfe_cpns_12, twfe_cpns_21, twfe_cpns_22, twfe_cpns_31, twfe_cpns_32)
+
+write.csv(results_s1t5b_twfe_cpns, paste0(DIR_OUT, "results_s1t5b_twfe_cpns.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 5b: TWFE Estimates (4 Specifications) with the Current-Year Pill, Switcher-Excluded (6 Groups) =====\n")
+results_s1t5b_twfe_cpns
+```
+
+#### (c) Lagged Pill on the Same Rows, Full Sample
+
+```{r}
+# Run all four TWFE specifications
+twfe_lg_11 <- run_twfe(data_age1_lg, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_lg_12 <- run_twfe(data_age1_lg, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_lg_21 <- run_twfe(data_age2_lg, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_lg_22 <- run_twfe(data_age2_lg, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_lg_31 <- run_twfe(data_age3_lg, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_lg_32 <- run_twfe(data_age3_lg, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t5c_twfe_lg <- bind_rows(twfe_lg_11, twfe_lg_12, twfe_lg_21, twfe_lg_22, twfe_lg_31, twfe_lg_32)
+
+write.csv(results_s1t5c_twfe_lg, paste0(DIR_OUT, "results_s1t5c_twfe_lg.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 5c: TWFE Estimates (4 Specifications) with the Lagged Pill on the Same Rows, Full Sample (6 Groups) =====\n")
+results_s1t5c_twfe_lg
+```
+
+#### (d) Lagged Pill on the Same Rows, Switcher-Excluded Sample
+
+```{r}
+# Run all four TWFE specifications
+twfe_lgns_11 <- run_twfe(data_age1_lgns, "birth_rate", "Birth Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_lgns_12 <- run_twfe(data_age1_lgns, "death_rate", "Death Rate & All Age")     |> mutate(age_group = "all_women",   .before = 1)
+twfe_lgns_21 <- run_twfe(data_age2_lgns, "birth_rate", "Birth Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_lgns_22 <- run_twfe(data_age2_lgns, "death_rate", "Death Rate & Teens")       |> mutate(age_group = "teens",       .before = 1)
+twfe_lgns_31 <- run_twfe(data_age3_lgns, "birth_rate", "Birth Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+twfe_lgns_32 <- run_twfe(data_age3_lgns, "death_rate", "Death Rate & Young Adult") |> mutate(age_group = "young_adult", .before = 1)
+
+results_s1t5d_twfe_lgns <- bind_rows(twfe_lgns_11, twfe_lgns_12, twfe_lgns_21, twfe_lgns_22, twfe_lgns_31, twfe_lgns_32)
+
+write.csv(results_s1t5d_twfe_lgns, paste0(DIR_OUT, "results_s1t5d_twfe_lgns.csv"), row.names = FALSE)
+
+cat("\n===== Stage 1 Task 5d: TWFE Estimates (4 Specifications) with the Lagged Pill on the Same Rows, Switcher-Excluded (6 Groups) =====\n")
+results_s1t5d_twfe_lgns
+```

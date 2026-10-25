@@ -1,0 +1,571 @@
+---
+title: "Stage 2: DID using Callaway & Sant'Anna (2021) Methods"
+author: "Haobing Wang"
+format: html
+editor: visual
+---
+
+This notebook:
+
+- estimates the Callaway & Sant'Anna (2021) model on the switcher-excluded restricted sample (four specifications)
+
+- runs the pre-trends check and the event study, and
+
+- runs three timing checks, which re-estimate the model (a) with the current-year pill instead of its one-year lag, (b) with the one-year lag but an anticipation of one year, and (c) with the one-year lag on the same rows as (a) (like-for-like comparison)
+
+It reads the panels saved by `Data_Process.ipynb`.
+
+Please make sure to run `Data_Process.ipynb` first to generate the necessary input data.
+
+## Libraries & Configurations
+
+```{r}
+# Clear the workspace
+rm(list = ls())
+```
+
+```{r}
+# Directories for data and output
+DIR_DATA_PROC <- "Data_Processed/"
+DIR_OUT       <- "Output/"
+
+# Set to TRUE to print the sample and the did notes of every Callaway & Sant'Anna run
+VERBOSE <- FALSE
+dir.create(DIR_OUT, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# Library packages
+library(tidyverse)
+library(glue)
+library(did)
+```
+
+## Load Data
+
+```{r}
+# Load the processed municipality x year panels saved by Data_Process.ipynb
+read_panel <- function(name) {
+  read.csv(paste0(DIR_DATA_PROC, name, ".csv"), stringsAsFactors = FALSE) |>
+    mutate(dom_comuna = factor(dom_comuna))
+}
+
+data_age1    <- read_panel("data_age1")
+data_age2    <- read_panel("data_age2")
+data_age3    <- read_panel("data_age3")
+data_age1_cp <- read_panel("data_age1_cp")
+data_age2_cp <- read_panel("data_age2_cp")
+data_age3_cp <- read_panel("data_age3_cp")
+```
+
+```{r}
+# Switcher-excluded samples, selected with the indicators in the panels (droplevels() drops the municipalities that are no longer in the sample)
+#   _ns:   one-year lagged pill (is_switcher == 0)
+#   _cpns: current-year pill
+#   _lgns: one-year lagged pill on the same rows as the current-pill data (in_cp == 1)
+data_age1_ns   <- data_age1 |> filter(is_switcher == 0) |> droplevels()
+data_age2_ns   <- data_age2 |> filter(is_switcher == 0) |> droplevels()
+data_age3_ns   <- data_age3 |> filter(is_switcher == 0) |> droplevels()
+
+data_age1_cpns <- data_age1_cp |> filter(is_switcher == 0) |> droplevels()
+data_age2_cpns <- data_age2_cp |> filter(is_switcher == 0) |> droplevels()
+data_age3_cpns <- data_age3_cp |> filter(is_switcher == 0) |> droplevels()
+
+data_age1_lgns <- data_age1 |> filter(in_cp == 1, is_switcher == 0) |> droplevels()
+data_age2_lgns <- data_age2 |> filter(in_cp == 1, is_switcher == 0) |> droplevels()
+data_age3_lgns <- data_age3 |> filter(in_cp == 1, is_switcher == 0) |> droplevels()
+
+# Check the sizes of the switcher-excluded samples
+samples <- list(
+  `lagged pill`                = list(data_age1_ns, data_age2_ns, data_age3_ns),
+  `current pill`               = list(data_age1_cpns, data_age2_cpns, data_age3_cpns),
+  `lagged pill, same rows`     = list(data_age1_lgns, data_age2_lgns, data_age3_lgns)
+)
+sample_sizes <- imap_dfr(samples, \(dfs, nm) tibble(
+  sample      = nm,
+  age_group   = c("all_women", "teens", "young_adult"),
+  n_municipal = map_int(dfs, \(x) n_distinct(x$dom_comuna)),
+  n_obs       = map_int(dfs, nrow)
+))
+cat("\n===== Sample sizes (municipalities and municipality-years) =====\n")
+sample_sizes
+```
+
+## Callaway & Sant'Anna (2021) Estimation
+
+### (1) Stage 2 Task 1: Callaway & Sant'Anna (2021) Estimation
+
+```{r}
+# Function to prepare the switcher-excluded panel for Callaway & Sant'Anna (2021)
+prepare_cs_data <- function(panel, outcome, trend_years = 2006:2009, label = "") {
+
+  # Municipalities first treated after the last year of the panel are not treated within the sample, so they are comparison units
+  panel <- panel |>
+    mutate(first_treat = ifelse(first_treat > max(year), 0, first_treat))
+
+  n_munis <- n_distinct(panel$dom_comuna)
+
+  # Municipality-specific linear trend, fitted on the pre-treatment years
+  trend_fit <- panel |>
+    filter(year %in% trend_years, is.finite(.data[[outcome]])) |>
+    group_by(dom_comuna) |>
+    filter(n() >= 3) |>
+    summarise(
+      slope     = cov(year, .data[[outcome]]) / var(year),
+      intercept = mean(.data[[outcome]]) - slope * mean(year),
+      .groups   = "drop"
+    )
+
+  # Covariates at their 2008 values
+  x_cols <- grep("^X_", names(panel), value = TRUE)
+  base   <- panel |>
+    filter(year == 2008) |>
+    distinct(dom_comuna, .keep_all = TRUE) |>
+    select(dom_comuna, all_of(x_cols))
+
+  x_keep <- x_cols[vapply(x_cols, function(v) {
+    if (startsWith(v, "X_party_")) sum(base[[v]], na.rm = TRUE) >= 10 else var(base[[v]], na.rm = TRUE) > 0
+  }, logical(1))]
+  x_keep <- setdiff(x_keep, grep("^X_party_", x_keep, value = TRUE)[1])   # Drop the reference party dummy
+
+  base <- base |>
+    select(dom_comuna, all_of(x_keep)) |>
+    rename_with(~ sub("^X_", "B_", .x), all_of(x_keep))
+
+  # Report what is dropped: no fitted trend, no 2008 covariates, covariates left out
+  if (VERBOSE) cat(glue("[{label}] municipalities: {n_munis}; without a fitted trend: {n_munis - nrow(trend_fit)}; without 2008 covariates: {n_munis - sum(complete.cases(base))}; covariates left out: {paste(setdiff(x_cols, x_keep), collapse = ', ')}"), "\n", sep = "")
+
+  # Add the three sets of variables to the panel
+  result <- panel |>
+    left_join(trend_fit, by = "dom_comuna") |>
+    mutate(
+      id_num = as.integer(factor(dom_comuna)),
+      "{outcome}_dt" := .data[[outcome]] - (intercept + slope * year)
+    ) |>
+    select(-slope, -intercept) |>
+    left_join(base, by = "dom_comuna")
+
+  return(result)
+}
+```
+
+```{r}
+# Function to run the Callaway & Sant'Anna (2021) estimator for one specification 
+run_cs <- function(panel, outcome, age_group, spec, base_period = "varying", anticipation = 0) {
+
+  # Outcome, covariates and weights of the specification
+  y_name  <- if (spec == "with_trends") paste0(outcome, "_dt") else outcome
+  xformla <- if (spec == "with_covariates") as.formula(paste("~", paste(grep("^B_", names(panel), value = TRUE), collapse = " + "))) else ~1
+  weights <- if (spec == "popln_weighted") "popln" else NULL
+
+  # Set the random seed for reproducibility of the bootstrap procedure
+  set.seed(2727)
+
+  # Estimate ATT(g,t) with never-treated municipalities as the comparison group
+  did_notes <- character()
+  invisible(capture.output(
+    att_gt_est <- withCallingHandlers(
+      att_gt(
+        yname                  = y_name,
+        tname                  = "year",
+        idname                 = "id_num",
+        gname                  = "first_treat",
+        xformla                = xformla,
+        data                   = as.data.frame(panel),
+        control_group          = "nevertreated",
+        weightsname            = weights,
+        fix_weights            = if (is.null(weights)) NULL else "varying",   # Use each year's own weights, whether or not the panel is balanced
+        allow_unbalanced_panel = TRUE,
+        clustervars            = "id_num",
+        bstrap                 = TRUE,
+        biters                 = 1000,
+        base_period            = base_period,
+        anticipation           = anticipation
+      ),
+      warning = function(w) { did_notes <<- c(did_notes, conditionMessage(w)); invokeRestart("muffleWarning") },
+      message = function(m) { did_notes <<- c(did_notes, trimws(conditionMessage(m))); invokeRestart("muffleMessage") }
+    )
+  ))
+
+  # Observations and cohorts actually used by att_gt
+  used       <- att_gt_est$DIDparams$data
+  cohorts    <- used |> distinct(id_num, first_treat) |> count(first_treat)
+  cohort_txt <- paste0(cohorts$first_treat, " (", cohorts$n, ")", collapse = ", ")
+  if (VERBOSE) cat(glue("[{age_group} / {outcome} / {spec}] municipalities: {att_gt_est$n}, observations: {nrow(used)}, cohorts (Inf = never treated): {cohort_txt}"), "\n", sep = "")
+  did_notes <- did_notes[!grepl("^Time-varying weights detected", did_notes)]   # Handled by fix_weights above
+  if (VERBOSE && length(did_notes) > 0) cat(glue("  did notes: {paste(unique(did_notes), collapse = ' | ')}"), "\n", sep = "")
+
+  # ATT(g,t) cells that could not be estimated 
+  n_att_na <- sum(is.na(att_gt_est$att))
+  if (n_att_na > 0) {
+    cat(glue("[{age_group} / {outcome} / {spec}] {n_att_na} ATT(g,t) cells could not be estimated and are dropped from the aggregation\n\n"))
+  }
+
+  # Overall effect theta_sel^o: the average of the cohort-level effects theta_sel(g), weighted by cohort size
+  overall_agg <- withCallingHandlers(
+    aggte(att_gt_est, type = "group", na.rm = TRUE),
+    warning = function(w) if (grepl("simultaneous confidence band", conditionMessage(w))) invokeRestart("muffleWarning")
+  )
+
+  # Dynamic effects theta_ES(e), used for the pre-trends check and the event study
+  dynamic_agg <- aggte(att_gt_est, type = "dynamic", na.rm = TRUE)
+
+  # Summary row of the overall effect, with a p-value from a normal approximation
+  overall <- tibble(
+    age_group   = age_group,
+    outcome     = outcome,
+    spec        = spec,
+    coef        = overall_agg$overall.att,
+    se          = overall_agg$overall.se,
+    p_value     = 2 * pnorm(-abs(overall_agg$overall.att / overall_agg$overall.se)),
+    n_obs       = nrow(used),                    # Municipality-year observations used by att_gt
+    n_municipal = att_gt_est$n,                  # Municipalities actually used by att_gt (unbalanced-panel aware)
+    n_att_na    = n_att_na,
+    has_covariates = (spec == "with_covariates") # Whether the specification conditions on the baseline covariates
+  )
+
+  result <- list(dynamic = dynamic_agg, overall = overall)
+
+  return(result)
+}
+```
+
+```{r}
+# Function to run the four CS specifications for one age group and one outcome, mirroring the four TWFE specifications
+run_cs_specs <- function(panel, outcome, age_group, trend_years = 2006:2009, anticipation = 0) {
+
+  panel_cs <- prepare_cs_data(panel, outcome, trend_years, label = glue("{age_group} / {outcome}"))
+
+  result <- list(
+    baseline        = run_cs(panel_cs, outcome, age_group, "baseline",        anticipation = anticipation),
+    with_trends     = run_cs(panel_cs, outcome, age_group, "with_trends",     anticipation = anticipation),
+    with_covariates = run_cs(panel_cs, outcome, age_group, "with_covariates", anticipation = anticipation),
+    popln_weighted  = run_cs(panel_cs, outcome, age_group, "popln_weighted",  anticipation = anticipation)
+  )
+
+  return(result)
+}
+```
+
+```{r}
+# Run the four Callaway & Sant'Anna specifications for all 3 age groups and 2 outcomes
+cs_11 <- run_cs_specs(data_age1_ns, "birth_rate", "all_women")
+cs_12 <- run_cs_specs(data_age1_ns, "death_rate", "all_women")
+cs_21 <- run_cs_specs(data_age2_ns, "birth_rate", "teens")
+cs_22 <- run_cs_specs(data_age2_ns, "death_rate", "teens")
+cs_31 <- run_cs_specs(data_age3_ns, "birth_rate", "young_adult")
+cs_32 <- run_cs_specs(data_age3_ns, "death_rate", "young_adult")
+
+cs_all <- list(cs_11, cs_12, cs_21, cs_22, cs_31, cs_32)
+
+results_s2t1_cs <- map(cs_all, \(cs) map(cs, "overall") |> bind_rows()) |>
+  bind_rows() |>
+  arrange(factor(spec, levels = c("baseline", "with_trends", "with_covariates", "popln_weighted")))
+
+write.csv(results_s2t1_cs, paste0(DIR_OUT, "results_s2t1_cs.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 1: Callaway & Sant'Anna (2021) Estimates (4 Specifications, 6 Groups) =====\n")
+results_s2t1_cs
+```
+
+```{r}
+# Municipalities lost in the with_trends specification relative to the switcher-excluded sample
+n_sample <- c(all_women = n_distinct(data_age1_ns$dom_comuna), teens = n_distinct(data_age2_ns$dom_comuna), young_adult = n_distinct(data_age3_ns$dom_comuna))
+lost <- results_s2t1_cs |>
+  filter(spec == "with_trends") |>
+  mutate(n_lost = n_sample[age_group] - n_municipal, age_group = factor(age_group, levels = names(n_sample))) |>
+  arrange(outcome, age_group) |>
+  group_by(outcome) |>
+  summarise(n_lost = paste(n_lost, collapse = "/"), .groups = "drop")
+cat("\nMunicipalities lost in the with_trends specification relative to the switcher-excluded sample (all women / teens / young adults):\n")
+cat(glue("  {lost$outcome}: {lost$n_lost}"), sep = "\n")
+```
+
+### (2) Stage 2 Task 2: Pre-treatment Dynamic Effects
+
+#### (a) Pre-trends Table
+
+```{r}
+# Function to extract the pre-treatment (e<0) dynamic effects of one CS run, as a "placebo-style" pre-trends check
+extract_pretrends <- function(cs_obj) {
+
+  d <- cs_obj$dynamic
+
+  result <- tibble(
+      age_group  = cs_obj$overall$age_group,
+      outcome    = cs_obj$overall$outcome,
+      event_time = d$egt,
+      att        = d$att.egt,
+      se         = d$se.egt,
+      crit_val   = d$crit.val.egt
+    ) |>
+    filter(event_time < 0) |>
+    mutate(
+      # Pointwise p-value from a normal approximation, and significance under the uniform critical value
+      p_value     = 2 * pnorm(-abs(att / se)),
+      sig_at_5pct = abs(att / se) > crit_val,
+      # Same N as the overall ATT for this age group/outcome (same underlying att_gt object)
+      n_obs       = cs_obj$overall$n_obs,
+      n_municipal = cs_obj$overall$n_municipal
+    )
+
+  return(result)
+}
+
+# Function to apply an extraction function to the six groups of a list of CS runs, for one specification, and stack the results
+stack_results <- function(runs, spec, extract) {
+
+  result <- runs |>
+    map(\(run) extract(run[[spec]])) |>
+    bind_rows()
+
+  return(result)
+}
+```
+
+```{r}
+# Pre-trends of the Full Model (main)
+results_s2t2_pretrends <- stack_results(cs_all, "with_covariates", extract_pretrends)
+
+write.csv(results_s2t2_pretrends, paste0(DIR_OUT, "results_s2t2_pretrends.csv"), row.names = FALSE)
+
+# Pre-trends of the other specifications. The "with_trends" specification is left out
+results_s2t2_pretrends_allspecs <- bind_rows(
+  baseline        = stack_results(cs_all, "baseline",        extract_pretrends),
+  with_covariates = stack_results(cs_all, "with_covariates", extract_pretrends),
+  popln_weighted  = stack_results(cs_all, "popln_weighted",  extract_pretrends),
+  .id = "spec"
+) |>
+  relocate(spec, .after = outcome)
+
+write.csv(results_s2t2_pretrends_allspecs, paste0(DIR_OUT, "results_s2t2_pretrends_allspecs.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 2: Pre-treatment Dynamic Effects (Placebo-style Pre-trends Check) =====\n")
+results_s2t2_pretrends
+```
+
+#### (b) Event Study
+
+```{r}
+# Function to run the baseline and Full Model CS with the universal base period (every year compared with e = -1)
+run_cs_es <- function(panel, outcome, age_group) {
+
+  panel_cs <- prepare_cs_data(panel, outcome, label = glue("{age_group} / {outcome}, event study"))
+
+  result <- list(
+    baseline        = run_cs(panel_cs, outcome, age_group, "baseline",        base_period = "universal"),
+    with_covariates = run_cs(panel_cs, outcome, age_group, "with_covariates", base_period = "universal")
+  )
+
+  return(result)
+}
+
+# Function to extract the event-study estimates (e >= -4) of one CS run, with uniform confidence bands
+extract_event_study <- function(cs_obj) {
+
+  d <- cs_obj$dynamic
+
+  result <- tibble(
+      age_group  = cs_obj$overall$age_group,
+      outcome    = cs_obj$overall$outcome,
+      event_time = d$egt,
+      att        = d$att.egt,
+      se         = d$se.egt,
+      crit_val   = d$crit.val.egt
+    ) |>
+    filter(event_time >= -4) |>
+    mutate(
+      # The reference period (e = -1) is normalised to zero and has no standard error
+      se       = if_else(is.na(se), 0, se),
+      # Uniform (simultaneous) confidence band, consistent with the critical value used in the pre-trends table
+      ci_lower = att - crit_val * se,
+      ci_upper = att + crit_val * se
+    )
+
+  return(result)
+}
+
+# Event study on the switcher-excluded restricted sample for all 3 age groups and both outcomes
+es_11 <- run_cs_es(data_age1_ns, "birth_rate", "all_women")
+es_12 <- run_cs_es(data_age1_ns, "death_rate", "all_women")
+es_21 <- run_cs_es(data_age2_ns, "birth_rate", "teens")
+es_22 <- run_cs_es(data_age2_ns, "death_rate", "teens")
+es_31 <- run_cs_es(data_age3_ns, "birth_rate", "young_adult")
+es_32 <- run_cs_es(data_age3_ns, "death_rate", "young_adult")
+
+es_all <- list(es_11, es_12, es_21, es_22, es_31, es_32)
+
+# Full Model (main) and baseline (kept for reference)
+results_s2t2_eventstudy          <- stack_results(es_all, "with_covariates", extract_event_study)
+results_s2t2_eventstudy_baseline <- stack_results(es_all, "baseline",        extract_event_study)
+
+write.csv(results_s2t2_eventstudy,          paste0(DIR_OUT, "results_s2t2_eventstudy.csv"),          row.names = FALSE)
+write.csv(results_s2t2_eventstudy_baseline, paste0(DIR_OUT, "results_s2t2_eventstudy_baseline.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 2: Event-Study Estimates (Universal Base Period, 6 Groups) =====\n")
+results_s2t2_eventstudy
+```
+
+```{r}
+# Rows: age groups; columns: outcomes
+fig_eventstudy <- results_s2t2_eventstudy |>
+  mutate(
+    age_group = factor(
+      age_group,
+      levels = c("all_women", "teens", "young_adult"),
+      labels = c("All women (15-49)", "Teens (15-19)", "Young adults (20-34)")
+    ),
+    outcome   = factor(
+      outcome,
+      levels = c("birth_rate", "death_rate"),
+      labels = c("Birth rate (per 1,000 women)", "Foetal death rate (per 1,000 births)")
+    )
+  ) |>
+  ggplot(aes(x = event_time, y = att)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = -0.5, colour = "grey75") +
+  geom_pointrange(aes(ymin = ci_lower, ymax = ci_upper), size = 0.4) +
+  facet_grid(age_group ~ outcome, scales = "free_y") +
+  scale_x_continuous(breaks = -4:1) +
+  labs(x = "Years relative to the first outcome year (e)", y = "ATT estimate") +
+  theme_minimal() +
+  theme(
+    # Separate the two columns clearly so that the birth-rate and death-rate panels are not read as one plot
+    panel.spacing.x = unit(2.5, "lines"),
+    panel.border    = element_rect(colour = "grey60", fill = NA)
+  )
+
+ggsave(paste0(DIR_OUT, "figure_s2t2_eventstudy.png"), fig_eventstudy, width = 10, height = 8, dpi = 300, bg = "white")
+
+fig_eventstudy
+```
+
+### (3) Stage 2 Task 3: Timing Checks
+
+#### (a) Callaway & Sant'Anna (2021) with the Current-Year Pill
+
+```{r}
+# Run the four Callaway & Sant'Anna specifications for all 3 age groups and 2 outcomes (6 groups), trends fitted on 2006-2008
+cs_cp_11 <- run_cs_specs(data_age1_cpns, "birth_rate", "all_women",   trend_years = 2006:2008)
+cs_cp_12 <- run_cs_specs(data_age1_cpns, "death_rate", "all_women",   trend_years = 2006:2008)
+cs_cp_21 <- run_cs_specs(data_age2_cpns, "birth_rate", "teens",       trend_years = 2006:2008)
+cs_cp_22 <- run_cs_specs(data_age2_cpns, "death_rate", "teens",       trend_years = 2006:2008)
+cs_cp_31 <- run_cs_specs(data_age3_cpns, "birth_rate", "young_adult", trend_years = 2006:2008)
+cs_cp_32 <- run_cs_specs(data_age3_cpns, "death_rate", "young_adult", trend_years = 2006:2008)
+
+cs_cp_all <- list(cs_cp_11, cs_cp_12, cs_cp_21, cs_cp_22, cs_cp_31, cs_cp_32)
+
+results_s2t3a_cs_cp <- map(cs_cp_all, \(cs) map(cs, "overall") |> bind_rows()) |>
+  bind_rows() |>
+  arrange(factor(spec, levels = c("baseline", "with_trends", "with_covariates", "popln_weighted")))
+
+write.csv(results_s2t3a_cs_cp, paste0(DIR_OUT, "results_s2t3a_cs_cp.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 3a: Callaway & Sant'Anna (2021) Estimates with the Current-Year Pill (4 Specifications, 6 Groups) =====\n")
+results_s2t3a_cs_cp
+```
+
+```{r}
+# Event study with the base year moved back to e = -2 (anticipation = 1, universal base period)
+run_cs_es_ant <- function(panel, outcome, age_group) {
+  panel_cs <- prepare_cs_data(panel, outcome, label = glue("{age_group} / {outcome}, anticipation event study"))
+  list(with_covariates = run_cs(panel_cs, outcome, age_group, "with_covariates", base_period = "universal", anticipation = 1))
+}
+
+# Same as extract_event_study(), but keeps e = -5 as well
+extract_event_study_ant <- function(cs_obj) {
+  d <- cs_obj$dynamic
+  tibble(
+      age_group  = cs_obj$overall$age_group,
+      outcome    = cs_obj$overall$outcome,
+      event_time = d$egt,
+      att        = d$att.egt,
+      se         = d$se.egt,
+      crit_val   = d$crit.val.egt
+    ) |>
+    filter(event_time >= -5) |>
+    mutate(
+      se       = if_else(is.na(se), 0, se),
+      ci_lower = att - crit_val * se,
+      ci_upper = att + crit_val * se
+    )
+}
+
+es_ant_all <- list(
+  run_cs_es_ant(data_age1_ns, "birth_rate", "all_women"),
+  run_cs_es_ant(data_age1_ns, "death_rate", "all_women"),
+  run_cs_es_ant(data_age2_ns, "birth_rate", "teens"),
+  run_cs_es_ant(data_age2_ns, "death_rate", "teens"),
+  run_cs_es_ant(data_age3_ns, "birth_rate", "young_adult"),
+  run_cs_es_ant(data_age3_ns, "death_rate", "young_adult")
+)
+
+results_s2t2_eventstudy_ant <- stack_results(es_ant_all, "with_covariates", extract_event_study_ant)
+write.csv(results_s2t2_eventstudy_ant, paste0(DIR_OUT, "results_s2t2_eventstudy_ant.csv"), row.names = FALSE)
+
+fig_eventstudy_ant <- results_s2t2_eventstudy_ant |>
+  mutate(
+    age_group = factor(age_group, levels = c("all_women", "teens", "young_adult"),
+                       labels = c("All women (15-49)", "Teens (15-19)", "Young adults (20-34)")),
+    outcome   = factor(outcome, levels = c("birth_rate", "death_rate"),
+                       labels = c("Birth rate (per 1,000 women)", "Foetal death rate (per 1,000 births)"))
+  ) |>
+  ggplot(aes(x = event_time, y = att)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = -1.5, colour = "grey75") +
+  geom_pointrange(aes(ymin = ci_lower, ymax = ci_upper), size = 0.4) +
+  facet_grid(age_group ~ outcome, scales = "free_y") +
+  scale_x_continuous(breaks = -5:1) +
+  labs(x = "Years relative to the first outcome year (e)", y = "ATT estimate") +
+  theme_minimal() +
+  theme(panel.spacing.x = unit(2.5, "lines"), panel.border = element_rect(colour = "grey60", fill = NA))
+
+ggsave(paste0(DIR_OUT, "figure_s2t2_eventstudy_ant.png"), fig_eventstudy_ant, width = 10, height = 8, dpi = 300, bg = "white")
+fig_eventstudy_ant
+```
+
+#### (b) Callaway & Sant'Anna (2021) with Anticipation of One Year
+
+```{r}
+# Run the four Callaway & Sant'Anna specifications with anticipation = 1 for all 3 age groups and 2 outcomes, trends fitted on 2006-2008
+cs_ant_11 <- run_cs_specs(data_age1_ns, "birth_rate", "all_women",   trend_years = 2006:2008, anticipation = 1)
+cs_ant_12 <- run_cs_specs(data_age1_ns, "death_rate", "all_women",   trend_years = 2006:2008, anticipation = 1)
+cs_ant_21 <- run_cs_specs(data_age2_ns, "birth_rate", "teens",       trend_years = 2006:2008, anticipation = 1)
+cs_ant_22 <- run_cs_specs(data_age2_ns, "death_rate", "teens",       trend_years = 2006:2008, anticipation = 1)
+cs_ant_31 <- run_cs_specs(data_age3_ns, "birth_rate", "young_adult", trend_years = 2006:2008, anticipation = 1)
+cs_ant_32 <- run_cs_specs(data_age3_ns, "death_rate", "young_adult", trend_years = 2006:2008, anticipation = 1)
+
+cs_ant_all <- list(cs_ant_11, cs_ant_12, cs_ant_21, cs_ant_22, cs_ant_31, cs_ant_32)
+
+results_s2t3b_cs_ant <- map(cs_ant_all, \(cs) map(cs, "overall") |> bind_rows()) |>
+  bind_rows() |>
+  arrange(factor(spec, levels = c("baseline", "with_trends", "with_covariates", "popln_weighted")))
+
+write.csv(results_s2t3b_cs_ant, paste0(DIR_OUT, "results_s2t3b_cs_ant.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 3b: Callaway & Sant'Anna (2021) Estimates with Anticipation = 1 (4 Specifications, 6 Groups) =====\n")
+results_s2t3b_cs_ant
+```
+
+#### (c) Callaway & Sant'Anna (2021) with the Lagged Pill on the Same Rows
+
+```{r}
+# Run the four Callaway & Sant'Anna specifications with the lagged pill
+cs_lg_11 <- run_cs_specs(data_age1_lgns, "birth_rate", "all_women",   trend_years = 2006:2009)
+cs_lg_12 <- run_cs_specs(data_age1_lgns, "death_rate", "all_women",   trend_years = 2006:2009)
+cs_lg_21 <- run_cs_specs(data_age2_lgns, "birth_rate", "teens",       trend_years = 2006:2009)
+cs_lg_22 <- run_cs_specs(data_age2_lgns, "death_rate", "teens",       trend_years = 2006:2009)
+cs_lg_31 <- run_cs_specs(data_age3_lgns, "birth_rate", "young_adult", trend_years = 2006:2009)
+cs_lg_32 <- run_cs_specs(data_age3_lgns, "death_rate", "young_adult", trend_years = 2006:2009)
+
+cs_lg_all <- list(cs_lg_11, cs_lg_12, cs_lg_21, cs_lg_22, cs_lg_31, cs_lg_32)
+
+results_s2t3c_cs_lg <- map(cs_lg_all, \(cs) map(cs, "overall") |> bind_rows()) |>
+  bind_rows() |>
+  arrange(factor(spec, levels = c("baseline", "with_trends", "with_covariates", "popln_weighted")))
+
+write.csv(results_s2t3c_cs_lg, paste0(DIR_OUT, "results_s2t3c_cs_lg.csv"), row.names = FALSE)
+
+cat("\n===== Stage 2 Task 3c: Callaway & Sant'Anna (2021) Estimates with the Lagged Pill on the Same Rows (4 Specifications, 6 Groups) =====\n")
+results_s2t3c_cs_lg
+```

@@ -1,6 +1,6 @@
 # Reassessing the Effects of the Emergency Contraceptive Pill on Children and Women in Chile: Do Current DID Methods Change Results?
 
-This repository contains the analysis code for my honours thesis at Monash University (ETC5860). In this project, I reassess the findings of Bentancor and Clarke (2017), who use a two-way fixed effects (TWFE) regression to estimate the effect of staggered municipal-level access to the emergency contraceptive (EC) pill in Chile on birth rates and early-gestation foetal deaths.
+This repository contains the analysis code for my thesis at Monash University (ETC5860). In this project, I reassess the findings of Bentancor and Clarke (2017), who use a two-way fixed effects (TWFE) regression to estimate the effect of staggered municipal-level access to the emergency contraceptive (EC) pill in Chile on birth rates and early-gestation foetal deaths.
 
 This project asks whether those TWFE conclusions are robust to modern staggered-adoption difference-in-differences (DID) methods:
 
@@ -9,73 +9,62 @@ This project asks whether those TWFE conclusions are robust to modern staggered-
 
 ## Repository Structure
 
-The repository is structured as follows:
-
 ```
 DID_ECpill/
-├── DID_ECpill.qmd     # Main analysis file (Quarto, R)
-├── Data/              # Input data (see Data Source below)
-├── Output/            # CSV results produced by rendering DID_ECpill.qmd
-├── .gitignore         # Git ignore file
-└── README.md          # This file
+├── Data_Process.qmd     # Step 1: builds the municipality-by-year panels
+├── Stage1.qmd           # Step 2: TWFE replication, diagnostics, spillover and timing checks
+├── Stage2.qmd           # Step 3: Callaway and Sant'Anna estimation, pre-trends, event study
+├── Stage3.qmd           # Step 4: comparison tables
+├── Data/                # Raw input data (see Data Source below)
+├── Data_Processed/      # Panels produced by Data_Process.qmd
+├── Output/              # CSV results and figures produced by Stage1-Stage3
+├── requirements.r       # R packages to install
+├── .gitignore           # Git ignore file
+└── README.md            # This file
 ```
 
 ## Analysis Overview
 
-The analysis is organised into the following stages:
+The analysis is organised into four files, which must be run in this order:
 
-1. **Data Preprocessing** — loads the raw birth and foetal-death records and aggregates them into a municipality-by-year panel, separately for three age groups (all women 15–49, teenagers 15–19, young adults 20–34).
-2. **Stage 1: TWFE Replication + De Chaisemartin & D'Haultfoeuille (2020) Diagnostics** — replicates the original TWFE specifications (baseline, municipality trends, population-weighted), computes the dCDH negative-weighting diagnostics, and runs two spillover robustness checks (regression-based and sample-restriction-based).
-3. **Stage 2: DID using Callaway & Sant'Anna (2021) Methods** — re-estimates TWFE on a switcher-excluded restricted sample (to isolate the effect of the estimation method from the effect of the sample restriction), estimates the Callaway and Sant'Anna model on the same restricted sample, and extracts pre-treatment dynamic effects as a placebo-style parallel-trends check.
-4. **Comparison of Results** — builds the three-way comparison table (original TWFE / restricted TWFE / Callaway and Sant'Anna) that is the main empirical output of this project.
+1. **`Data_Process.qmd`** loads the raw birth and foetal-death records, constructs the outcome, treatment, cohort, switcher and spillover variables, and aggregates them into municipality-by-year panels for three age groups (all women 15–49, teenagers 15–19, young adults 20–34). It saves the panels to `Data_Processed/` (the full panels with the one-year lagged pill, and the panels with the current-year pill used for the timing checks) and the summary statistics to `Output/`.
 
-Each stage writes its results to a corresponding CSV file in `Output/`.
+2. **`Stage1.qmd`** replicates the four original TWFE specifications (baseline, population-weighted, municipality-specific trends, covariates), computes the De Chaisemartin and D'Haultfoeuille (2020) negative-weighting diagnostics, and runs two spillover robustness checks (regression-based and sample-restriction-based). It also re-estimates TWFE on the switcher-excluded restricted sample, so that the effect of the estimation method can be separated from the effect of the sample restriction, and re-estimates it with the current-year pill (timing checks).
+
+3. **`Stage2.qmd`** estimates the Callaway and Sant'Anna model on the switcher-excluded restricted sample (four specifications), extracts the pre-treatment dynamic effects as a placebo-style parallel-trends check, produces the event-study estimates and figure, and runs the timing checks (current-year pill, an anticipation of one year, and the one-year lag on the same rows as the current-year pill).
+
+4. **`Stage3.qmd`** builds the overall comparison tables (original TWFE, restricted TWFE and Callaway and Sant'Anna), which are the main empirical output of this project, together with the comparisons for the timing checks and for the anticipation of one year.
+
 
 ## Data Source
 
 The data used in this project is the publicly available replication package for Bentancor and Clarke (2017), from <https://github.com/damiancclarke/morning-after-pill>. Two files are used and included in the `Data/` directory:
 
-- `S1Data_granular_covars.csv` — birth-level records
-- `S1Data_deaths_covars.csv` — foetal-death-level records
+- `S1Data_granular_covars.csv` — live births
+- `S1Data_deaths_covars.csv` — foetal deaths
 
-Note that the public replication data covers 2006–2011, one year short of the original paper's 2006–2012 sample, so the baseline TWFE coefficients reported here do not reproduce the original paper's coefficients exactly.
+Both cover 336 municipalities. Note that the public replication data covers 2006–2011, one year short of the original paper's 2006–2012 sample, so the TWFE coefficients reported here do not reproduce the original paper's coefficients exactly.
 
 ## Pipeline
 
-All analysis code is contained in `DID_ECpill.qmd`, so the pipeline is straightforward:
+Step 0: Ensure you have R 4.5.2 or later installed on your system.
 
-Step 1: Clone the repository:
+Step 1: Clone the repository, and open it as a working directory in RStudio.
 
-```bash
-git clone https://github.com/HBhhh1888/DID_ECpill.git
-cd DID_ECpill
-```
+Step 2: Install the required R packages by running all the code in `requirements.r`.
 
-Step 2: Uncomment and run the package installation code in `DID_ECpill.qmd` if you have not installed these packages:
+Step 3: Run or render all the four quarto files in order:
 
-```r
-# Install packages
-# 1. Regular CRAN packages
-install.packages(c("tidyverse", "purrr", "tibble", "fixest", "broom", "TwoWayFEWeights", "did", "remotes"))
+1. `Data_Process.qmd`
+2. `Stage1.qmd`
+3. `Stage2.qmd`
+4. `Stage3.qmd`
 
-# 2. summclust (removed from CRAN, install via r-universe)
-install.packages("summclust", repos = "https://s3alfisc.r-universe.dev")
+After these steps:
 
-# 3. If compilation fails (e.g. "emutls_w not found"), install gfortran toolchain first
-remotes::install_github("coatless-mac/macrtools")
-macrtools::macos_rtools_install()
+- The processed data will be available in the `Data_Processed/` directory
+- The results from Stage 1, 2 and 3 will be shown in the quarto output and will also be available in the `Output/` directory
 
-# 4. fwildclusterboot (from GitHub)
-remotes::install_github("s3alfisc/fwildclusterboot")
-```
+## Acknowledgements
 
-Step 3: Run the analysis by rendering the Quarto document.
-
-- Open `DID_ECpill.qmd` in RStudio and run all chunks, or
-- Render it from the command line using Quarto:
-
-```bash
-quarto render DID_ECpill.qmd
-```
-
-After these three steps, the rendered output of `DID_ECpill.qmd` will contain the full set of results, which are also saved as CSV files in the `Output/` directory.
+I would like to thank Bentancor and Clarke for making the replication data of their paper publicly available at <https://github.com/damiancclarke/morning-after-pill>, De Chaisemartin and D'Haultfoeuille for their diagnostic tools, and Callaway and Sant'Anna for their staggered-adoption estimator, all of which made this project possible. I am also grateful to my supervisor, Akanksha Negi, for the guidance and feedback throughout this project, and to the ETC5860 teaching team for their patient guidance.

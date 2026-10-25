@@ -1,0 +1,346 @@
+---
+title: "Data Processing"
+author: "Haobing Wang"
+format: html
+editor: visual
+---
+
+This notebook builds the municipality x year panels used in the analysis, from the raw replication data of Bentancor and Clarke (2017), and saves them to `Data_Processed/`:
+
+- `data_age{1,2,3}`: the full panels for all women (15-49), teens (15-19) and young adults (20-34), with the pill lagged by one year as in Bentancor and Clarke (2017)
+- `data_age{1,2,3}_cp`: the panels with the pill moved back by one year, so that the treatment is the current-year pill rather than its one-year lag (timing check)
+
+Each panel is saved as a `.csv` file, which `Stage1.ipynb` and `Stage2.ipynb` read.
+
+## Libraries & Configurations
+
+```{r}
+# Clear the workspace
+rm(list = ls())
+```
+
+```{r}
+# Directories for data and output
+DIR_DATA      <- "Data/"
+DIR_DATA_PROC <- "Data_Processed/"
+DIR_OUT       <- "Output/"
+dir.create(DIR_DATA_PROC, showWarnings = FALSE, recursive = TRUE)
+dir.create(DIR_OUT, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# Library packages
+library(tidyverse)
+library(glue)
+```
+
+## Data Preprocessing
+
+### (1) Load raw data
+
+```{r}
+data_raw_births <- read.csv(glue("{DIR_DATA}S1Data_granular_covars.csv"), stringsAsFactors = FALSE)
+data_raw_deaths <- read.csv(glue("{DIR_DATA}S1Data_deaths_covars.csv"), stringsAsFactors = FALSE)
+
+cat(glue("
+Summary of raw data:
+- Births data summary:
+  - Number of rows: {nrow(data_raw_births)}
+  - Number of distinct municipalities: {n_distinct(data_raw_births$dom_comuna)}
+- Deaths data summary:
+  - Number of rows: {nrow(data_raw_deaths)}
+  - Number of distinct municipalities: {n_distinct(data_raw_deaths$dom_comuna)}
+\n"))
+
+cat("Unique years in births data:", paste(as.character(unique(data_raw_births$year)), collapse = ", "), "\n")
+cat("Unique years in deaths data:", paste(as.character(unique(data_raw_deaths$year)), collapse = ", "), "\n")
+```
+
+### (2) Data processing: Aggregate granular data into a municipality x year panel
+
+**Data structure after aggregation:**
+
+Identifiers:
+
+- `dom_comuna`: Municipality ID
+- `year`: Year ID
+
+Key Variables:
+
+- `popln`: Population within the age range
+- `births`: Number of births within the age range
+- `pill`: Indicator for pill availability in the previous year (the one-year lag used by Bentancor and Clarke, 2017)
+- `pilldistance`: Distance in kilometres to the nearest treated municipality (lagged in the same way)
+- `early_deaths`: Number of early deaths within the age range
+- `birth_rate`: Birth rate per 1000 women
+- `death_rate`: Early death rate per 1000 live births
+- `trend`: Linear time trend within each municipality
+- `close10`: Indicator for being close to the nearest treated municipality within 10 km (requires pill == 0)
+- `close20`: Indicator for being close to the nearest treated municipality within 10-20 km (requires pill == 0)
+- `close30`: Indicator for being close to the nearest treated municipality within 20-30 km (requires pill == 0)
+- `first_treat`: First year municipality has pill == 1 (0 if never treated)
+- `is_switcher`: Indicator for whether pill reverts from 1 to 0 at any point
+- `is_spillover`: Indicator for never-treated municipalities close to a treated one
+- `in_cp`: Indicator for whether the municipality-year is also in the current-pill panel `data_age{1,2,3}_cp` (added after the current-pill panels are built)
+
+Covariates:
+
+- `X_party_` Series: Dummy variables for the mayor's political party
+- `X_mujer`: Indicator for whether the mayor is female
+- `X_votop`: The mayor's vote share/margin
+- `X_outofschool`: Percentage of girls out of high school
+- `X_educationspend`: Total education spending (in 100,000 units)
+- `X_educationmunicip`: Municipal-level education spending (in 100,000 units)
+- `X_healthspend`: Total health spending (in 100,000 units)
+- `X_healthtraining`: Health worker training spending (in 100,000 units)
+- `X_healthstaff`: Health staffing spending (in 100,000 units)
+- `X_femalepoverty`: Percentage of female-headed households below the poverty line
+- `X_femaleworkers`: Percentage of female workers in professional/public positions
+- `X_condom`: Condom availability/usage rate (regional level)
+
+```{r}
+# Covariates names in original data
+X_cols <- c(
+  "party", "mujer", "votop",                           # Mayor-related variables
+  "outofschool", "educationspend", "educationmunicip", # Education-related variables
+  "healthspend", "healthtraining", "healthstaff",      # Health-related variables
+  "femalepoverty", "femaleworkers",                    # Female-related variables
+  "condom"                                             # Contraceptive use
+)
+
+# Spending covariates are rescaled to units of 100,000
+X_spend_cols <- c("educationspend", "educationmunicip", "healthspend", "healthtraining", "healthstaff")
+```
+
+```{r}
+# Function to prepare model data for a specific age range
+get_model_data <- function(age_lo, age_hi) {
+
+  # Aggregate births data by municipality and year
+  agg_births <- data_raw_births |>
+    filter(age >= age_lo, age <= age_hi) |>
+    group_by(dom_comuna, year) |>
+    summarise(
+      popln        = sum(n, na.rm = TRUE),
+      births       = sum(n[pregnant == 1], na.rm = TRUE),
+      pill         = first(pill),
+      pilldistance = first(pilldistance),
+      across(all_of(X_cols), ~first(.x)),
+      .groups = "drop"
+    )
+
+  # Create dummy variables for the mayor's political party
+  for (lv in sort(unique(agg_births$party))) {
+    agg_births[[paste0("X_party_", lv)]] <- as.integer(agg_births$party == lv)
+  }
+
+  agg_births <- agg_births |>
+    select(-party) |>
+    rename_with(~ paste0("X_", .x), .cols = setdiff(X_cols, "party")) |>
+    mutate(across(all_of(paste0("X_", X_spend_cols)), ~ .x / 1e5))
+
+  # Aggregate deaths data by municipality and year
+  agg_deaths <- data_raw_deaths |>
+    filter(age >= age_lo, age <= age_hi) |>
+    group_by(dom_comuna, year) |>
+    summarise(
+      early_deaths = sum(earlyP, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  # Aggregate combined data by municipality and year
+  agg_combine <- agg_births |> inner_join(agg_deaths, by = c("dom_comuna", "year")) |>
+    arrange(dom_comuna, year) |>
+    group_by(dom_comuna) |>
+    mutate(trend = year - min(year)) |>
+    ungroup() |>
+    mutate(
+      birth_rate = (births / popln) * 1000,
+      death_rate = (early_deaths / births) * 1000,
+      dom_comuna = factor(dom_comuna),
+      close10 = as.integer(pill == 0 & pilldistance >  0 & pilldistance <= 10),
+      close20 = as.integer(pill == 0 & pilldistance > 10 & pilldistance <= 20),
+      close30 = as.integer(pill == 0 & pilldistance > 20 & pilldistance <= 30)
+    ) |>
+    relocate(starts_with("X_"), .after = last_col())
+
+  # Construct municipality-level derived variables
+  treatment_flags <- agg_combine |>
+    arrange(dom_comuna, year) |>
+    group_by(dom_comuna) |>
+    summarise(
+      first_treat  = if (any(pill == 1)) min(year[pill == 1]) else 0,
+      is_switcher  = as.integer(any(diff(pill) == -1)),
+      is_spillover = as.integer(all(pill == 0) & any(close10 == 1 | close20 == 1 | close30 == 1)),
+      .groups = "drop"
+    )
+
+  agg_combine <- agg_combine |> left_join(treatment_flags, by = "dom_comuna")
+
+  return(agg_combine)
+}
+```
+
+```{r}
+# Create model data for 3 different age groups
+data_age1 <- get_model_data(15, 49)   # All women
+data_age2 <- get_model_data(15, 19)   # Teens 15-19 years old
+data_age3 <- get_model_data(20, 34)   # Young adults 20-34 years old
+```
+
+### (3) Summary Statistics
+
+#### (a) Overall Summary Statistics
+
+```{r}
+# Function to compute descriptive statistics for one age group
+get_summary_stats <- function(df, label) {
+  flags <- df |> distinct(dom_comuna, first_treat, is_switcher, is_spillover)
+
+  tibble(
+    age_group            = label,
+    n_municipalities     = n_distinct(df$dom_comuna),
+    n_obs                = nrow(df),
+    popln_mean           = mean(df$popln, na.rm = TRUE),
+    popln_sd             = sd(df$popln, na.rm = TRUE),
+    birth_rate_mean      = mean(df$birth_rate, na.rm = TRUE),
+    birth_rate_sd        = sd(df$birth_rate, na.rm = TRUE),
+    death_rate_mean      = mean(df$death_rate, na.rm = TRUE),
+    death_rate_sd        = sd(df$death_rate, na.rm = TRUE),
+    pill_share           = mean(df$pill, na.rm = TRUE),
+    n_never_treated      = sum(flags$first_treat == 0),
+    n_treated            = sum(flags$first_treat > 0),
+    # First pill year = first treatment year - 1
+    first_pill_min       = min(flags$first_treat[flags$first_treat > 0]) - 1,
+    first_pill_max       = max(flags$first_treat[flags$first_treat > 0]) - 1,
+    first_treat_min      = min(flags$first_treat[flags$first_treat > 0]),
+    first_treat_max      = max(flags$first_treat[flags$first_treat > 0]),
+    n_treat_cohorts      = n_distinct(flags$first_treat[flags$first_treat > 0]),
+    n_switchers          = sum(flags$is_switcher),
+    n_spillover_excluded = sum(flags$is_spillover)
+  )
+}
+
+summary_stats <- bind_rows(
+  get_summary_stats(data_age1, "All Women (15-49)"),
+  get_summary_stats(data_age2, "Teens (15-19)"),
+  get_summary_stats(data_age3, "Young Adults (20-34)")
+)
+
+write.csv(summary_stats, paste0(DIR_OUT, "results_data_summary_stats.csv"), row.names = FALSE)
+
+cat("\n===== Descriptive Statistics by Age Group =====\n")
+summary_stats
+```
+
+#### (b) Covariates Summary Statistics
+
+```{r}
+# Continuous covariates vs. discrete (0/1) covariates
+X_discr_cols <- c("X_mujer", grep("^X_party_", names(data_age1), value = TRUE))
+X_count_cols <- setdiff(grep("^X_", names(data_age1), value = TRUE), X_discr_cols)
+
+# Function to compute descriptive statistics of the continuous covariates
+get_summary_stats_cov_count <- function(df) {
+  df |>
+    select(all_of(X_count_cols)) |>
+    pivot_longer(everything(), names_to = "variable") |>
+    summarise(
+      n      = sum(!is.na(value)),
+      mean   = mean(value, na.rm = TRUE),
+      sd     = sd(value, na.rm = TRUE),
+      min    = min(value, na.rm = TRUE),
+      Q1    = quantile(value, 0.25, na.rm = TRUE),
+      median = median(value, na.rm = TRUE),
+      Q3    = quantile(value, 0.75, na.rm = TRUE),
+      max    = max(value, na.rm = TRUE),
+      .by    = variable
+    )
+}
+
+# Function to compute descriptive statistics of the discrete (0/1) covariates
+get_summary_stats_cov_discr <- function(df) {
+  df |>
+    select(all_of(X_discr_cols)) |>
+    pivot_longer(everything(), names_to = "variable") |>
+    summarise(
+      n         = sum(!is.na(value)),
+      n_one     = sum(value == 1, na.rm = TRUE),
+      share_one = mean(value == 1, na.rm = TRUE),
+      .by       = variable
+    )
+}
+
+summary_stats_cov_count <- get_summary_stats_cov_count(data_age1)
+summary_stats_cov_discr <- get_summary_stats_cov_discr(data_age1)
+
+write.csv(summary_stats_cov_count, paste0(DIR_OUT, "results_data_summary_stats_cov_count.csv"), row.names = FALSE)
+write.csv(summary_stats_cov_discr, paste0(DIR_OUT, "results_data_summary_stats_cov_discr.csv"), row.names = FALSE)
+
+cat("\n===== Descriptive Statistics of Continuous Covariates =====\n")
+summary_stats_cov_count
+
+cat("\n===== Descriptive Statistics of Discrete Covariates =====\n")
+summary_stats_cov_discr
+```
+
+## Current-Pill Sample
+
+```{r}
+# Function to move the pill variables one year back
+get_current_pill <- function(panel) {
+  panel |>
+    select(-any_of("in_cp")) |>
+    arrange(dom_comuna, year) |>
+    group_by(dom_comuna) |>
+    mutate(
+      has_next = lead(year) == year + 1,
+      across(c(pill, pilldistance, close10, close20, close30), ~ ifelse(has_next, lead(.x), NA))
+    ) |>
+    ungroup() |>
+    filter(!is.na(pill)) |>
+    mutate(first_treat = ifelse(first_treat > 0, first_treat - 1, 0)) |>
+    select(-has_next)
+}
+```
+
+```{r}
+# Apply to all 3 age groups to get current-pill data
+data_age1_cp <- get_current_pill(data_age1)
+data_age2_cp <- get_current_pill(data_age2)
+data_age3_cp <- get_current_pill(data_age3)
+
+# Indicator for the rows of the full panels that are also in the current-pill panels
+add_in_cp <- function(panel, panel_cp) {
+  panel |>
+    left_join(panel_cp |> distinct(dom_comuna, year) |> mutate(in_cp = 1L), by = c("dom_comuna", "year")) |>
+    mutate(in_cp = coalesce(in_cp, 0L))
+}
+
+data_age1 <- add_in_cp(data_age1, data_age1_cp)
+data_age2 <- add_in_cp(data_age2, data_age2_cp)
+data_age3 <- add_in_cp(data_age3, data_age3_cp)
+
+# Save processed municipality x year panels
+write.csv(data_age1,    paste0(DIR_DATA_PROC, "data_age1.csv"),    row.names = FALSE)
+write.csv(data_age2,    paste0(DIR_DATA_PROC, "data_age2.csv"),    row.names = FALSE)
+write.csv(data_age3,    paste0(DIR_DATA_PROC, "data_age3.csv"),    row.names = FALSE)
+write.csv(data_age1_cp, paste0(DIR_DATA_PROC, "data_age1_cp.csv"), row.names = FALSE)
+write.csv(data_age2_cp, paste0(DIR_DATA_PROC, "data_age2_cp.csv"), row.names = FALSE)
+write.csv(data_age3_cp, paste0(DIR_DATA_PROC, "data_age3_cp.csv"), row.names = FALSE)
+
+# Check the panels
+panel_check <- tibble(
+  age_group = c("all_women", "teens", "young_adult"),
+  rows_lag  = c(nrow(data_age1), nrow(data_age2), nrow(data_age3)),
+  rows_cp   = c(nrow(data_age1_cp), nrow(data_age2_cp), nrow(data_age3_cp)),
+  rows_in_cp = c(sum(data_age1$in_cp), sum(data_age2$in_cp), sum(data_age3$in_cp)),
+  years_cp  = c(paste(range(data_age1_cp$year), collapse = "-"), paste(range(data_age2_cp$year), collapse = "-"), paste(range(data_age3_cp$year), collapse = "-"))
+)
+cat("\n===== Panel check (rows_cp should equal rows_in_cp) =====\n")
+panel_check
+
+# Check the first pill years of the current-pill panel (all women)
+cat("\nFirst pill years in the current-pill panel (all women), 0 = never:\n")
+print(table(distinct(data_age1_cp, dom_comuna, first_treat)$first_treat))
+```

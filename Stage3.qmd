@@ -1,0 +1,159 @@
+---
+title: "Stage 3: Comparison of Results"
+author: "Haobing Wang"
+format: html
+editor: visual
+---
+
+This notebook brings together the TWFE results from `Stage1.ipynb` and the Callaway & Sant'Anna results from `Stage2.ipynb`, and builds the overall comparison tables. It reads the result files saved in `Output/` by the two previous notebooks.
+
+- Task 1 compares the main results: TWFE on the full sample, TWFE on the switcher-excluded sample, and Callaway & Sant'Anna (the one-year lagged pill)
+
+- Task 2 compares the same three columns across the timing checks, in three panels: the one-year lagged pill (main results), the one-year lagged pill on the same rows as the current-year pill, and the current-year pill
+
+- Task 3 compares Callaway & Sant'Anna without and with an anticipation of one year
+
+Run order: `Data_Process.ipynb` -\> `Stage1.ipynb` -\> `Stage2.ipynb` -\> `Stage3.ipynb`.
+
+## Libraries & Configurations
+
+```{r}
+# Clear the workspace
+rm(list = ls())
+```
+
+```{r}
+# Directories for data and output
+DIR_DATA_PROC <- "Data_Processed/"
+DIR_OUT       <- "Output/"
+dir.create(DIR_OUT, showWarnings = FALSE, recursive = TRUE)
+```
+
+```{r}
+# Library packages
+library(tidyverse)
+```
+
+## Load Results
+
+```{r}
+# Load the results saved by Stage1.ipynb and Stage2.ipynb
+results_s1t1_twfe_origin <- read.csv(paste0(DIR_OUT, "results_s1t1_twfe_origin.csv"))   # TWFE, full sample (Stage 1)
+results_s1t4_twfe_ns     <- read.csv(paste0(DIR_OUT, "results_s1t4_twfe_ns.csv"))       # TWFE, switcher-excluded sample (Stage 1)
+results_s2t1_cs          <- read.csv(paste0(DIR_OUT, "results_s2t1_cs.csv"))            # Callaway & Sant'Anna, switcher-excluded sample (Stage 2)
+
+# Timing checks
+results_s1t5a_twfe_cp    <- read.csv(paste0(DIR_OUT, "results_s1t5a_twfe_cp.csv"))      # TWFE, current-year pill, full sample (Stage 1)
+results_s1t5b_twfe_cpns  <- read.csv(paste0(DIR_OUT, "results_s1t5b_twfe_cpns.csv"))    # TWFE, current-year pill, switcher-excluded sample (Stage 1)
+results_s1t5c_twfe_lg    <- read.csv(paste0(DIR_OUT, "results_s1t5c_twfe_lg.csv"))      # TWFE, lagged pill on the same rows, full sample (Stage 1)
+results_s1t5d_twfe_lgns  <- read.csv(paste0(DIR_OUT, "results_s1t5d_twfe_lgns.csv"))    # TWFE, lagged pill on the same rows, switcher-excluded sample (Stage 1)
+results_s2t3a_cs_cp      <- read.csv(paste0(DIR_OUT, "results_s2t3a_cs_cp.csv"))        # Callaway & Sant'Anna, current-year pill, switcher-excluded sample (Stage 2)
+results_s2t3b_cs_ant     <- read.csv(paste0(DIR_OUT, "results_s2t3b_cs_ant.csv"))       # Callaway & Sant'Anna, one-year lag with anticipation = 1, switcher-excluded sample (Stage 2)
+results_s2t3c_cs_lg      <- read.csv(paste0(DIR_OUT, "results_s2t3c_cs_lg.csv"))        # Callaway & Sant'Anna, lagged pill on the same rows, switcher-excluded sample (Stage 2)
+```
+
+## Comparison of Results
+
+### (1) Stage 3 Task 1: Overall Comparison
+
+```{r}
+# Check that every comparison row has all its estimates (a failed join would leave NA)
+check_missing <- function(df, cols) {
+  cat("Rows:", nrow(df), "| rows with a missing estimate:", sum(!complete.cases(df[, cols])), "\n")
+}
+
+# Build overall comparison table
+results_s3t1_overall_comparison <- results_s1t1_twfe_origin |>
+  filter(spec == "baseline_TWFE") |>
+  select(age_group, outcome, TWFE_full_coef = coef, TWFE_full_se = se, TWFE_full_pvalue = p_value) |>
+  left_join(
+    results_s1t4_twfe_ns |>
+      filter(spec == "baseline_TWFE") |>
+      select(age_group, outcome, TWFE_restricted_coef = coef, TWFE_restricted_se = se, TWFE_restricted_pvalue = p_value),
+    by = c("age_group", "outcome")
+  ) |>
+  left_join(
+    results_s2t1_cs |>
+      filter(spec == "baseline") |>
+      select(age_group, outcome, CS_restricted_coef = coef, CS_restricted_se = se, CS_restricted_pvalue = p_value),
+    by = c("age_group", "outcome")
+  )
+
+write.csv(results_s3t1_overall_comparison, paste0(DIR_OUT, "results_s3t1_overall_comparison.csv"), row.names = FALSE)
+
+cat("\n===== Stage 3 Task 1: Comparison of Results =====\n")
+check_missing(results_s3t1_overall_comparison, c("TWFE_full_coef", "TWFE_restricted_coef", "CS_restricted_coef"))
+results_s3t1_overall_comparison
+```
+
+```{r}
+# Same three-way comparison for each of the four specifications (long format: one row per group x specification)
+spec_labels <- c(
+  baseline_TWFE           = "baseline",
+  TWFE_with_trends        = "with_trends",
+  TWFE_with_covariates    = "with_covariates",
+  baseline_popln_weighted = "popln_weighted"
+)
+
+pick <- function(df, prefix) {
+  df |>
+    mutate(spec = coalesce(spec_labels[spec], spec)) |>
+    select(age_group, outcome, spec, coef, se, p_value, n_municipal) |>
+    rename_with(~ paste0(prefix, "_", .x), c(coef, se, p_value, n_municipal))
+}
+
+results_s3t1_overall_comparison_allspecs <- pick(results_s1t1_twfe_origin, "TWFE_full") |>
+  left_join(pick(results_s1t4_twfe_ns, "TWFE_restricted"), by = c("age_group", "outcome", "spec")) |>
+  left_join(pick(results_s2t1_cs,      "CS_restricted"),   by = c("age_group", "outcome", "spec")) |>
+  arrange(factor(spec, levels = unname(spec_labels)), age_group, outcome)
+
+write.csv(results_s3t1_overall_comparison_allspecs, paste0(DIR_OUT, "results_s3t1_overall_comparison_allspecs.csv"), row.names = FALSE)
+
+cat("\n===== Stage 3 Task 1: Comparison of Results, All Four Specifications =====\n")
+check_missing(results_s3t1_overall_comparison_allspecs, c("TWFE_full_coef", "TWFE_restricted_coef", "CS_restricted_coef"))
+results_s3t1_overall_comparison_allspecs
+```
+
+### (2) Stage 3 Task 2: Comparison of the Timing Checks
+
+```{r}
+# Three panels, each with the same three columns (TWFE on the full sample, TWFE on the switcher-excluded sample, Callaway & Sant'Anna)
+#   Panel A: the one-year lagged pill, 2006-2011 (main results, Task 1)
+#   Panel B: the one-year lagged pill, on the same rows as Panel C (2006-2010)
+#   Panel C: the current-year pill (2006-2010)
+# spec_labels and pick() are defined in Task 1 above (long format: one row per panel x group x specification)
+build_panel <- function(twfe_full, twfe_restricted, cs, label) {
+  pick(twfe_full, "TWFE_full") |>
+    left_join(pick(twfe_restricted, "TWFE_restricted"), by = c("age_group", "outcome", "spec")) |>
+    left_join(pick(cs,              "CS_restricted"),   by = c("age_group", "outcome", "spec")) |>
+    mutate(panel = label, .before = 1)
+}
+
+results_s3t2_timing_comparison <- bind_rows(
+  build_panel(results_s1t1_twfe_origin, results_s1t4_twfe_ns,    results_s2t1_cs,     "A. Lagged pill, 2006-2011"),
+  build_panel(results_s1t5c_twfe_lg,    results_s1t5d_twfe_lgns, results_s2t3c_cs_lg, "B. Lagged pill, same rows as C, 2006-2010"),
+  build_panel(results_s1t5a_twfe_cp,    results_s1t5b_twfe_cpns, results_s2t3a_cs_cp, "C. Current pill, 2006-2010")
+) |>
+  arrange(factor(spec, levels = unname(spec_labels)), age_group, outcome, panel)
+
+write.csv(results_s3t2_timing_comparison, paste0(DIR_OUT, "results_s3t2_timing_comparison.csv"), row.names = FALSE)
+
+cat("\n===== Stage 3 Task 2: Comparison of the Timing Checks (3 Panels, All Four Specifications) =====\n")
+check_missing(results_s3t2_timing_comparison, c("TWFE_full_coef", "TWFE_restricted_coef", "CS_restricted_coef"))
+results_s3t2_timing_comparison
+```
+
+### (3) Stage 3 Task 3: Comparison with Anticipation of One Year
+
+```{r}
+# Callaway & Sant'Anna without (Task 1) and with (Stage 2 Task 3b) an anticipation of one year, on the same switcher-excluded sample
+results_s3t3_anticipation_comparison <- pick(results_s2t1_cs, "CS_ant0") |>
+  left_join(pick(results_s2t3b_cs_ant, "CS_ant1"), by = c("age_group", "outcome", "spec")) |>
+  arrange(factor(spec, levels = unname(spec_labels)), age_group, outcome)
+
+write.csv(results_s3t3_anticipation_comparison, paste0(DIR_OUT, "results_s3t3_anticipation_comparison.csv"), row.names = FALSE)
+
+cat("\n===== Stage 3 Task 3: Callaway & Sant'Anna without and with Anticipation = 1 (All Four Specifications) =====\n")
+check_missing(results_s3t3_anticipation_comparison, c("CS_ant0_coef", "CS_ant1_coef"))
+results_s3t3_anticipation_comparison
+```
